@@ -41,7 +41,25 @@ idempotência persistente, Transactional Outbox e Inbox.
 
 ## 4. Modelo de domínio
 
-_(preenchido a partir da T02)_
+### 4.1 Money (T02)
+
+- **Representação:** inteiro de unidades menores (centavos) como `bigint`, escala fixa de 2
+  casas e moeda ISO-4217 (`^[A-Z]{3}$`). Nenhuma operação passa por `number`.
+- **Contrato de entrada estrito (A1):** `^(0|[1-9]\d{0,17})\.\d{2}$`. Exatamente 2 casas, sem sinal
+  e sem zeros à esquerda; no máximo 18 dígitos inteiros, para caber em `NUMERIC(20,2)`. São rejeitados
+  `"25"`, `"25.5"`, `"1.005"` (não há arredondamento: um valor ambíguo é recusado, nunca ajustado),
+  `"1e2"`, `"NaN"`, `"Infinity"`, `"-1.00"`, `"+1.00"`, `""`. Por isso a mesma quantia tem uma
+  única forma textual, e o `payloadHash` não depende de normalização.
+- **Negativos:** `Money.from` (contrato) recusa negativos. Internamente, `subtract`/`negate` podem
+  produzir negativos (ex.: verificar se um débito deixaria o saldo abaixo de zero), sempre
+  formatados com escala fixa (`"-5.05"`).
+- **Overflow:** qualquer resultado fora de `±(10^20 − 1)` centavos lança `MoneyOverflowError`,
+  e nunca é truncado.
+- **Moedas:** o domínio valida só o formato. A allowlist (`SUPPORTED_CURRENCIES`, default
+  `BRL,USD,EUR`, A3) é aplicada na borda (HTTP/SQS). Moedas com 0 ou 3 casas (JPY, KWD) estão fora de escopo.
+- **Imutabilidade:** `Object.freeze` no construtor; toda operação devolve uma nova instância.
+- **Erros:** `InvalidMoneyError`, `InvalidCurrencyError`, `CurrencyMismatchError`,
+  `MoneyOverflowError`, todos subclasses de `DomainError`, com `code` estável.
 
 ## 5. Persistência e schema
 
