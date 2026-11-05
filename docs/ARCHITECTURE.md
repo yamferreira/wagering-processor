@@ -709,6 +709,14 @@ _(dia 3)_
 - **CPU do ORM no hot path:** cerca de 10ms de CPU por submissão no processo (§6.2). Escala-se com mais
   instâncias. Se fosse preciso mais por processo, o caminho seria SQL nativo nas 10 a 12 instruções do
   hot path, mantendo o MikroORM para o resto.
+- **Inbox no fallback 23505:** quando duas mensagens diferentes (`messageId`s distintos) com a mesma
+  Idempotency-Key correm em paralelo e a perdedora cai no fallback de violação única, a transação dela faz
+  rollback (inclusive a linha da inbox), e o resultado vira replay e ack. A inbox não registra esse
+  `messageId`. Se ele for reentregue, cai de novo na idempotência e gera outro replay: correto, só não
+  passa pelo fast path da inbox.
+- **Sem heartbeat de visibilidade:** o processamento de uma mensagem é limitado por `lock_timeout` (5s),
+  `statement_timeout` (10s) e até 3 retries internos, bem abaixo do visibility timeout de 30s. Uma
+  mensagem que ainda assim passe do timeout é reentregue, e a inbox a deduplica.
 
 ## Apêndice A — Interpretações da especificação (A1–A32)
 
