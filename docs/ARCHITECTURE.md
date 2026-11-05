@@ -146,6 +146,43 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
 - **OPENING (A17):** `providerId = "internal"`, `externalTransactionId = "opening:{walletId}"`,
   `idempotencyKey = "internal:opening:{walletId}"`, sem `roundId`/`gameId`, criada já PROCESSED.
 
+### 4.5 Regras de negócio: `decide()` + `applyDecision()` (T06, §7)
+
+`decide(tx, wallet, lookup)` é uma função pura. O use case a chama **com o lock da wallet
+adquirido**, então `wallet` e `lookup` refletem o último estado commitado e não mudam durante
+a decisão. A saída é uma das variantes `APPLY(direction)`, `RECORD_ONLY` (LOSS), `REJECT(code)` ou
+`PENDING_REFERENCE`. `applyDecision` é o único ponto em que uma transação de aposta move o
+saldo: saldo, lançamento e status mudam juntos.
+
+Ordem de avaliação (a primeira regra que falha decide):
+
+1. `playerId` ≠ dono da wallet → `WALLET_PLAYER_MISMATCH`; moeda ≠ moeda da wallet → `CURRENCY_MISMATCH`.
+2. Se há referência:
+   - não encontrada → `PENDING_REFERENCE`;
+   - tipo não permitido → `REFERENCE_KIND_NOT_ALLOWED`. Permitidos: WIN/LOSS/REFUND → BET; ROLLBACK → BET, WIN, REFUND;
+   - provider, player, wallet, moeda ou rodada divergentes → `REFERENCE_MISMATCH` + `details.field`;
+   - referência ainda em PENDING/PENDING_REFERENCE → `PENDING_REFERENCE` (A7); REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`;
+   - reversão com valor diferente → `REFERENCE_AMOUNT_MISMATCH`;
+   - referência já revertida → `REFERENCE_ALREADY_REVERSED`. Vale para reversões (A4) e para WIN/LOSS sobre BET revertida (A6).
+3. LOSS → `RECORD_ONLY`, sem lançamento e sem incrementar a versão.
+4. Direção DEBIT sem saldo: BET → `INSUFFICIENT_FUNDS`; ROLLBACK → `REVERSAL_INSUFFICIENT_FUNDS`.
+5. Caso contrário → `APPLY`.
+
+**Risco documentado (A6):** REFUND ou ROLLBACK de uma BET que já tem WIN é **permitido**, conforme
+a spec literal. O provedor deve fazer o ROLLBACK do WIN antes. Bloquear isso exigiria uma regra
+não prevista na especificação, que só pegaria WINs com referência.
+
+**PENDING_REFERENCE com backoff (§7.1, A25):** `ReferenceRetryPolicy`, de domínio e pura:
+`delay(n) = min(base · 2ⁿ, cap)`. O default é 10 retries, base 2s e cap 5 min, o que dá
+2+4+8+…+256+300+300 = 1110 s (≈ 18,5 min) até `REJECTED / REFERENCE_NOT_FOUND`. A primeira
+marcação agenda sem contar tentativa; o retry nº `maxAttempts` que ainda não encontra a
+referência rejeita. Os parâmetros são configuráveis por env (T16).
+
+**Justificativa do limite:** entregas fora de ordem entre provedores costumam se resolver em
+segundos ou minutos. Esperar 18 min cobre filas atrasadas e retries do provedor sem manter
+transações pendentes indefinidamente. Além disso, o wake-up (T16) resolve na hora quando a
+referência chega.
+
 ## 5. Persistência e schema
 
 _(T09/T10)_
