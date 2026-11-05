@@ -164,13 +164,13 @@ describe("outbox publisher", () => {
 
     const first = await waitFor(async () => {
       const [row] = await h.db.sql`
-        SELECT attempts, next_attempt_at, last_error FROM outbox_messages WHERE published_at IS NULL ORDER BY id LIMIT 1`;
+        SELECT id, attempts, next_attempt_at, last_error FROM outbox_messages WHERE published_at IS NULL ORDER BY id LIMIT 1`;
       return row && row.attempts >= 1 ? row : undefined;
     }, { description: "first failed attempt" });
     expect(first.last_error).toBeTruthy();
     const second = await waitFor(async () => {
       const [row] = await h.db.sql`
-        SELECT attempts, next_attempt_at FROM outbox_messages WHERE published_at IS NULL ORDER BY id LIMIT 1`;
+        SELECT attempts, next_attempt_at FROM outbox_messages WHERE id = ${first.id}`;
       return row && row.attempts >= 2 ? row : undefined;
     }, { description: "second failed attempt", timeoutMs: 10_000 });
     // delay(1) = 2 s · (1 − ≤20% jitter): the next attempt is pushed further out than the first.
@@ -180,8 +180,13 @@ describe("outbox publisher", () => {
     for (const runtime of h.runtimes.splice(0)) await runtime.stop();
     await h.start({ ROLES: ["publisher"] });
     await waitFor(async () => (await pendingCount(h)) === 0, { description: "published after recovery", timeoutMs: 20_000 });
+    // Each row has its own jittered schedule, so they are not necessarily retried together: check the
+    // row that was observed failing twice, and that every row failed at least once before publishing.
+    const [tracked] = await h.db.sql`SELECT attempts, published_at FROM outbox_messages WHERE id = ${first.id}`;
+    expect(tracked.attempts).toBeGreaterThanOrEqual(2);
+    expect(tracked.published_at).not.toBeNull();
     const [row] = await h.db.sql`SELECT MIN(attempts)::int AS attempts FROM outbox_messages WHERE last_error IS NOT NULL`;
-    expect(row.attempts).toBeGreaterThanOrEqual(2);
+    expect(row.attempts).toBeGreaterThanOrEqual(1);
     await drainQueue(h.queues.events);
   });
 

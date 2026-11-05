@@ -27,7 +27,14 @@ bun run start
 | `bun run sqs:setup` | cria as filas (idempotente) |
 | `bun run start` | API + workers |
 | `bun run typecheck` | `tsc --noEmit` |
-| `bun test` | todas as suítes (requer o docker compose no ar) |
-| `bun run test:unit` / `test:integration` / `test:concurrency` | suítes separadas |
+| `bun test` | unidade + integração (~1,5 min; requer o docker compose no ar) |
+| `bun run test:concurrency` | concorrência: paralelismo real, 3 processos, crash e restart (~1,5 min) |
+| `bun run test:all` | tudo: `bun test` e depois `test:concurrency` |
+| `bun run test:unit` / `test:integration` | suítes separadas |
+
+> **Por que a concorrência fica fora do `bun test` padrão:** juntas, as suítes passam de 3 minutos. O
+> `bunfig.toml` ignora `test/concurrency/**` no `bun test` (`pathIgnorePatterns`), e
+> `bun run test:concurrency` roda essa pasta explicitamente. Ela sobe processos reais de `src/main.ts`,
+> e o harness garante que nenhum fica órfão.
 
 _(README completo na T25.)_

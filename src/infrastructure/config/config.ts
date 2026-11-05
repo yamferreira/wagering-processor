@@ -32,7 +32,7 @@ const ConfigSchema = z.object({
   PENDING_REF_BATCH_SIZE: intFromEnv(20),
   PENDING_REF_POLL_MS: intFromEnv(500),
   /** A claimed PENDING_REFERENCE item is reserved this long (a crashed worker releases it after). */
-  PENDING_REF_LEASE_MS: intFromEnv(30_000),
+  PENDING_REF_LEASE_MS: intFromEnv(10_000),
   /** Comma-separated roles of this process (A31): api, consumer, publisher, pending-worker. */
   ROLES: z
     .string()

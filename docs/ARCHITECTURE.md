@@ -269,6 +269,9 @@ em `number`, e tem um teste negativo que prova que detecta divergências.
   (round-robin entre instâncias), `fireSqs` envia em lotes de 10 em paralelo (com `MessageGroupId`
   aleatório quando se quer anular a ordenação do broker) e `waitForQuiescence` espera fila vazia, outbox
   100% publicada e nenhuma PENDING_REFERENCE vencida, estável por 3 leituras seguidas.
+- **Separação das suítes:** `bun test` roda unidade + integração (o `bunfig.toml` ignora `test/concurrency/**`
+  com `pathIgnorePatterns`); `bun run test:concurrency` roda a concorrência explicitamente
+  (`--path-ignore-patterns=__none__`) e `bun run test:all` roda as duas. Juntas, passariam de 3 minutos.
 
 ### 5.4 Mapeamento MikroORM (T10)
 
@@ -568,7 +571,9 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 - **Sinais no Windows:** o Bun entrega `kill("SIGTERM")` a um processo filho como término imediato no
   Windows (verificado: exit 143 sem rodar o handler). O processo trata SIGTERM/SIGINT (Linux/containers) e
   também uma mensagem IPC `{ type: "shutdown" }`, que dispara o mesmo caminho. O harness de testes usa
-  SIGTERM real em POSIX e IPC no Windows.
+  SIGTERM real em POSIX e IPC no Windows. O canal IPC só existe quando `src/main.ts` é iniciado direto
+  (`bun src/main.ts`, como faz o harness): o wrapper `bun run start` não repassa mensagens IPC, mas trata
+  Ctrl+C/SIGTERM normalmente, e matar o wrapper também encerra o filho (verificado, sem órfão).
 - **Fault injection em processos filhos:** env `FAULTS="<ponto>=<ação>[*n]"` (`crash` = SIGKILL em si
   mesmo, `throw`, `transient`, `delay:<ms>`), lida pelo `EnvFaultInjector`. Vazia em produção (no-op).
 
@@ -639,6 +644,31 @@ Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nu
 - **Testes:** dependente chegando antes da referência por HTTP e por SQS, a cascata, o esgotamento, dois
   workers concorrentes sobre 40 pendências (20 PROCESSED e 20 REJECTED, exatamente um evento terminal por
   transação) e a expiração do lease.
+
+### 9.5 Múltiplas instâncias, crash e restart (T20, §5, §8, §10, §11, §13)
+
+Uma **instância** (A31) é um processo `bun run start`. A env `ROLES` (`api,consumer,publisher,pending-worker`,
+todos por padrão) separa os papéis para escalar cada um. Nenhum papel guarda estado em memória: toda
+coordenação passa pelo PostgreSQL (lock de linha da wallet, `SKIP LOCKED`, constraints únicas, inbox).
+
+Provas com **processos reais** (`test/concurrency/*`, 3 instâncias com todos os papéis, mesmo banco e
+mesmas filas):
+
+| Cenário | Verificação |
+|---|---|
+| §8 entre instâncias (10×), as duas BETs em instâncias diferentes | 201 + 422, saldo 20.00, 1 DEBIT |
+| §8 com uma BET por HTTP e a outra por SQS ao mesmo tempo (5×) | 1 PROCESSED + 1 `INSUFFICIENT_FUNDS` |
+| A mesma BET 50×: 30 por HTTP em round-robin + 20 por SQS com grupos aleatórios | 1 débito; no máximo um 201 (o vencedor pode ter vindo pela fila); o resto replay com o mesmo `transactionId` |
+| Carga mista em 20 wallets, com referências chegando por canais diferentes (fora de ordem) | reconciliação `consistent: true` em todas pela API, saldo exato, nada pendente ou FAILED, todos os eventos da outbox entregues |
+| **Crash depois do commit e antes do ack:** a instância 1 é a única consumidora e faz SIGKILL em si mesma no fault point | commit completo (tx, ledger, inbox, outbox) sem ack; outras 2 instâncias recebem a reentrega, a inbox a reconhece (`DUPLICATE_MESSAGE`), fazem ack, publicam os eventos; 1 débito |
+| **Restart:** SIGKILL nas 3 instâncias com cerca de 20% da carga commitada (HTTP + SQS com referências fora de ordem), restart, o provedor reenvia as requisições HTTP sem resposta | exatamente 1 transação por comando, todas terminais; reconciliação consistente em todas as wallets; outbox 100% publicada e entregue; DLQ vazia; nenhuma PENDING_REFERENCE sobrando |
+
+- **Lease órfão:** o teste de restart expôs o caso em que um worker morto tinha acabado de fazer o claim de
+  itens já acordados. Eles ficam reservados até o lease vencer, e só então outro worker os resolve
+  (correto, mas atrasa). Por isso o default de `PENDING_REF_LEASE_MS` caiu de 30s para 10s: o
+  processamento de um lote leva bem menos de 1s. O teste usa 2s e exige que nada fique pendente no fim.
+- **Estabilidade:** a suíte de concorrência rodou 3 vezes seguidas sem falha, nenhum processo órfão
+  (conferido por PID), e cada execução leva cerca de 90s.
 
 ## 10. Autenticação
 

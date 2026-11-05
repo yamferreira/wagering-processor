@@ -29,9 +29,10 @@
     "test": "bun test --timeout 60000",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test --timeout 60000 test/integration",
-    "test:concurrency": "bun test --timeout 120000 test/concurrency",
+    "test:concurrency": "bun test --timeout 180000 --path-ignore-patterns=__none__ test/concurrency",
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down",
-    "sqs:setup": "bun run scripts/setup-queues.ts"
+    "sqs:setup": "bun run scripts/setup-queues.ts",
+    "test:all": "bun run test && bun run test:concurrency"
   }
 }
