@@ -1,0 +1,49 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { runMigrations } from "../../../src/infrastructure/persistence/migrate";
+import { createEmptyDatabase, type TestDatabase } from "../../support/db";
+
+const APP_TABLES = ["inbox_messages", "outbox_messages", "wager_transactions", "wallet_ledger_entries", "wallets"];
+
+async function appTables(db: TestDatabase): Promise<string[]> {
+  const rows: { tablename: string }[] = await db.sql`
+    SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'mikro_orm_migrations'
+    ORDER BY tablename`;
+  return rows.map((r) => r.tablename);
+}
+
+async function appFunctions(db: TestDatabase): Promise<string[]> {
+  const rows: { proname: string }[] = await db.sql`
+    SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' ORDER BY p.proname`;
+  return rows.map((r) => r.proname);
+}
+
+describe("migrations are versioned and reversible", () => {
+  let db: TestDatabase;
+
+  beforeAll(async () => {
+    db = await createEmptyDatabase();
+  });
+
+  afterAll(async () => {
+    await db.drop();
+  });
+
+  test("up → down → up runs cleanly and leaves the full schema", async () => {
+    const firstUp = await runMigrations(db.url, "up");
+    expect(firstUp.map((m) => m.name)).toEqual(["Migration20261105000000_initial"]);
+    expect(await appTables(db)).toEqual(APP_TABLES);
+
+    const down = await runMigrations(db.url, "down");
+    expect(down.map((m) => m.name)).toEqual(["Migration20261105000000_initial"]);
+    expect(await appTables(db)).toEqual([]);
+    expect(await appFunctions(db)).toEqual([]);
+
+    const secondUp = await runMigrations(db.url, "up");
+    expect(secondUp).toHaveLength(1);
+    expect(await appTables(db)).toEqual(APP_TABLES);
+
+    const noop = await runMigrations(db.url, "up");
+    expect(noop).toHaveLength(0);
+  });
+});

@@ -208,7 +208,52 @@ referência chega.
 
 ## 5. Persistência e schema
 
-_(T09/T10)_
+### 5.1 Migrations (T09)
+
+- Uma migration MikroORM em SQL explícito (`Migration20261105000000_initial`), com `up` e `down`
+  reversíveis, registrada numa lista explícita (`migrationsList`) e não por glob de arquivos.
+- O migrator roda por script (`bun run migration:up|down` → `scripts/migrate.ts` →
+  `orm.migrator.up()/down()`), sem a CLI do MikroORM. Validado no Bun sem fallback.
+- Snapshots desligados, porque o schema é escrito à mão: constraints e triggers não são
+  expressáveis via `EntitySchema`. `allOrNothing` + `transactional` fazem um lote parcial falhar inteiro.
+- Testes: `up → down → up → up (no-op)` num database vazio.
+
+### 5.2 Garantias no schema (§5, §6)
+
+| Garantia | Objeto no banco |
+|---|---|
+| Dinheiro exato | `NUMERIC(20,2)` + `CHAR(3)` (nunca float) |
+| 1 wallet por player + moeda | `wallets_player_currency_uq` |
+| Saldo ≥ 0 | `CHECK (balance >= 0)` em wallets; `balance_before/after >= 0` no ledger; `resulting_balance >= 0` |
+| Idempotência | `wager_tx_idempotency_key_uq`, `wager_tx_provider_external_uq` |
+| Reversão única (A4) | índice único parcial `wager_tx_single_reversal_uq (reference_transaction_id) WHERE kind IN (REFUND, ROLLBACK) AND status = PROCESSED`. Rejeições não ocupam a vaga |
+| Referência na mesma wallet | FK composta `(reference_transaction_id, wallet_id) → wager_transactions(id, wallet_id)` |
+| ≤ 1 lançamento por transação | `ledger_transaction_uq (transaction_id)` |
+| Lançamento da mesma wallet e moeda | FKs compostas `(transaction_id, wallet_id)` e `(wallet_id, currency)` |
+| Aritmética do lançamento | `CHECK (balance_after = balance_before ± amount)` |
+| Ledger append-only | triggers `BEFORE UPDATE/DELETE` (por linha) e `BEFORE TRUNCATE` → `23001` |
+| Encadeamento do ledger | trigger `ledger_check_chain`: versão = anterior + 1 e `balance_before` = `balance_after` anterior (ou 0 na primeira entrada, versão 1 ou 2) |
+| Saldo ⇔ ledger | constraint triggers **deferred** `wallet_check_ledger` e `ledger_check_wallet`: no commit, `wallets.version/balance` = versão e `balance_after` da última entrada. Sem entradas, exige versão 1 e saldo 0. Cobre "toda alteração de saldo tem lançamento e vice-versa" |
+| Lost update | `UNIQUE (wallet_id, wallet_version)`, além do lock e do `WHERE version = ?` (T10) |
+| Transação terminal imutável | trigger `wager_tx_guard_update`: nada muda após PROCESSED/REJECTED/FAILED, colunas de negócio nunca mudam e não há volta para PENDING. DELETE/TRUNCATE proibidos |
+| Coerência de status | CHECKs: `failure_code` ⇔ REJECTED/FAILED; PROCESSED exige `processed_at` + `resulting_balance`; PENDING_REFERENCE exige `next_reference_attempt_at` |
+| Regras por kind | REFUND/ROLLBACK exigem referência; BET/OPENING não podem ter; valor > 0 exceto LOSS; `provider_id = 'internal'` ⇔ OPENING; round/game obrigatórios exceto OPENING |
+| Outbox/Inbox | PK da outbox = `eventId`; conteúdo imutável e publicação definitiva (trigger). Inbox com PK `(consumer_name, message_id)` e imutável |
+
+`resulting_balance_currency` existe porque o saldo observado é na moeda da **wallet**, que numa
+rejeição `CURRENCY_MISMATCH` difere da moeda da operação.
+
+**Custo dos triggers deferred:** dois lookups indexados por `(wallet_id, wallet_version)` por
+commit que toca a wallet. É aceito em troca da garantia, no próprio banco, de que saldo e
+ledger não divergem mesmo diante de um bug na aplicação ou de SQL manual. Só um superuser que
+desabilite triggers consegue burlar isso, e a reconciliação detecta (T23).
+
+### 5.3 Infraestrutura de teste
+
+Há um database template migrado por processo de teste (`wagering_test_tpl_<pid>`), clonado com
+`CREATE DATABASE … TEMPLATE` para cada arquivo de teste. Templates de processos mortos são
+removidos na inicialização seguinte. `assertLedgerInvariant` compara tudo em SQL (`NUMERIC`), nunca
+em `number`, e tem um teste negativo que prova que detecta divergências.
 
 ## 6. Concorrência
 
