@@ -6,7 +6,7 @@ import type { Container } from "../app/container";
 import { AppModule } from "./app.module";
 import { mapError, MalformedJsonError } from "./error-mapping";
 import { ErrorFilter } from "./filters/error.filter";
-import { correlationMiddleware } from "./request-context";
+import { correlationMiddleware, requestLogMiddleware } from "./request-context";
 
 export interface HttpAppOptions {
   onUnexpectedError?: (error: unknown) => void;
@@ -18,6 +18,7 @@ export async function createHttpApp(container: Container, options: HttpAppOption
   const server = app.getHttpAdapter().getInstance() as express.Express;
   server.disable("x-powered-by");
   app.use(correlationMiddleware);
+  app.use(requestLogMiddleware(container.logger.child({ component: "http" })));
   app.use(express.json({ limit: "64kb", strict: true, type: ["application/json", "application/*+json"] }));
   // Body-parser errors happen before routing; give them the same error contract.
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {

@@ -115,6 +115,7 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
       retryPolicy,
       batchSize: config.PENDING_REF_BATCH_SIZE,
       leaseMs: config.PENDING_REF_LEASE_MS,
+      logger: logger.child({ component: "pending-reference-worker" }),
     }),
     publishOutbox: new PublishOutboxBatch({ runner, publisher: eventPublisher, clock, faults, batchSize: config.OUTBOX_BATCH_SIZE }),
     getWallet: new GetWallet(runner),

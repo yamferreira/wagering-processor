@@ -1,4 +1,5 @@
 import type { Logger } from "../../application/ports/logger";
+import { errorFields } from "../observability/logger";
 
 export interface PollingWorkerOptions {
   name: string;
@@ -48,7 +49,7 @@ export class PollingWorker {
         failures++;
         delay = Math.min(this.options.idleDelayMs * 2 ** failures, this.options.maxErrorDelayMs ?? 10_000);
         this.logger.warn(
-          { worker: this.options.name, err: error instanceof Error ? `${error.name}: ${error.message}` : String(error), delayMs: delay },
+          { worker: this.options.name, ...errorFields(error), delayMs: delay },
           "worker round failed",
         );
       }

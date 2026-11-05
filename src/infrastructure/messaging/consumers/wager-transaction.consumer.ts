@@ -1,6 +1,8 @@
 import type { FaultInjector } from "../../../application/ports/fault-injector";
 import type { Logger } from "../../../application/ports/logger";
 import type { HandleWagerMessage, MessageOutcome } from "../../../application/use-cases/handle-wager-message";
+import { enrichLogContext, withLogContext } from "../../observability/log-context";
+import { errorFields } from "../../observability/logger";
 import type { ReceivedMessage, SqsQueue } from "../sqs/sqs.client";
 import { parseWagerEnvelope } from "./envelope.schema";
 import { type ClassifiedFailure, classifyConsumerError } from "./error-classifier";
@@ -93,7 +95,7 @@ export class WagerTransactionConsumer {
       released++;
       await this.deps.input
         .changeVisibility(entry.message.receiptHandle, 0)
-        .catch((error) => this.deps.logger.warn({ err: describe(error) }, "could not release message"));
+        .catch((error) => this.deps.logger.warn({ ...errorFields(error) }, "could not release message"));
     }
     this.deps.logger.info({ completed: pending.length - released, released }, "consumer stopped");
     return { completed: pending.length - released, released };
@@ -116,7 +118,7 @@ export class WagerTransactionConsumer {
         if (!this.running) break;
         pollFailures++;
         const delay = Math.min(250 * 2 ** pollFailures, 10_000);
-        this.deps.logger.warn({ err: describe(error), delayMs: delay }, "sqs receive failed; backing off");
+        this.deps.logger.warn({ ...errorFields(error), delayMs: delay }, "sqs receive failed; backing off");
         await sleep(delay);
         continue;
       } finally {
@@ -128,7 +130,7 @@ export class WagerTransactionConsumer {
           batch.map((m) =>
             this.deps.input
               .changeVisibility(m.receiptHandle, 0)
-              .catch((error) => this.deps.logger.warn({ err: describe(error) }, "could not release message")),
+              .catch((error) => this.deps.logger.warn({ ...errorFields(error) }, "could not release message")),
           ),
         );
         break;
@@ -157,19 +159,28 @@ export class WagerTransactionConsumer {
     }
   }
 
-  private async handle(message: ReceivedMessage, entry: { released: boolean }): Promise<void> {
+  /** Each message runs in its own log context (correlationId, messageId, walletId, providerId, transactionId). */
+  private handle(message: ReceivedMessage, entry: { released: boolean }): Promise<void> {
+    return withLogContext({ sqsMessageId: message.messageId, receiveCount: message.receiveCount }, () =>
+      this.process(message, entry),
+    );
+  }
+
+  private async process(message: ReceivedMessage, entry: { released: boolean }): Promise<void> {
     const startedAt = performance.now();
-    const log = this.deps.logger.child({ sqsMessageId: message.messageId, receiveCount: message.receiveCount });
+    const log = this.deps.logger;
     let outcome: MessageOutcome;
     try {
       const parsed = parseWagerEnvelope(message.body);
-      const scoped = log.child({
+      enrichLogContext({
         messageId: parsed.messageId,
         correlationId: parsed.correlationId ?? parsed.messageId,
         walletId: parsed.command.walletId,
         providerId: parsed.command.providerId,
       });
+      const scoped = log;
       outcome = await this.deps.handler.execute(parsed);
+      if (outcome.type === "APPLIED") enrichLogContext({ transactionId: outcome.result.transaction.id });
       await this.deps.faults.checkpoint("consumer:after-commit-before-ack");
       if (entry.released) return; // shutdown already handed it back; the redelivery dedupes via inbox
       await this.deps.input.delete(message.receiptHandle);
@@ -180,8 +191,7 @@ export class WagerTransactionConsumer {
           outcome: outcome.type,
           ...(outcome.type === "APPLIED"
             ? {
-                transactionId: outcome.result.transaction.id,
-                status: outcome.result.transaction.status,
+                txStatus: outcome.result.transaction.status,
                 failureCode: outcome.result.transaction.failureCode,
                 idempotentReplay: outcome.result.replay,
               }
@@ -211,11 +221,12 @@ export class WagerTransactionConsumer {
       }
       await this.deadLetter(message, failure);
       this.deps.observer?.onDeadLetter?.(failure, message.receiveCount);
-      log.error({ failure: failure.code, reason: failure.message }, "message moved to the DLQ");
+      // failure.message is not logged: domain messages may quote amounts (it travels in the DLQ attributes).
+      log.error({ failure: failure.code }, "message moved to the DLQ");
     } catch (error) {
       // Could not even reschedule/move it: leave it; the visibility timeout (and, as a last
       // resort, the broker redrive policy) takes over.
-      log.error({ err: describe(error), failure: failure.code }, "failed to handle consumer failure");
+      log.error({ ...errorFields(error), failure: failure.code }, "failed to handle consumer failure");
     }
   }
 
@@ -240,6 +251,3 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function describe(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}

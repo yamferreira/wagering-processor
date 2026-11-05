@@ -702,7 +702,32 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
 
 ## 11. Observabilidade
 
-_(dia 3)_
+### 11.1 Logs estruturados (T21, §12)
+
+- **Formato:** pino, uma linha JSON por evento em stdout: `time` (ISO-8601), `level` (texto), `service`,
+  `pid`, `msg`, `component` e os campos do evento.
+- **Contexto da unidade de trabalho** (`AsyncLocalStorage`, `observability/log-context.ts`), injetado em
+  toda linha pelo `mixin` do pino, sem passar logger pelos use cases:
+  - HTTP: `correlationId` (`X-Correlation-Id` recebido, se bem formado, ou gerado, e devolvido no header).
+    Os controllers acrescentam `providerId`, `walletId`, `transactionId`, `txStatus`, `failureCode` e
+    `idempotentReplay`. Ao terminar, cada requisição gera **uma** linha `http request` com método, rota
+    (template), status e duração (health e `/metrics` em debug; 5xx em error).
+  - SQS: cada mensagem roda no seu contexto com `sqsMessageId`, `receiveCount`, `messageId` (do envelope),
+    `correlationId` (do envelope, ou o `messageId`), `walletId`, `providerId` e, depois do use case,
+    `transactionId`. Linhas `message processed` / `transient failure…` / `message moved to the DLQ`.
+  - Worker: `pending reference resolved` com `transactionId`, `walletId` e `resolution` (PROCESSED/REJECTED;
+    as reavaliações que continuam pendentes ficam em debug).
+- **Sem dados sensíveis:** o código registra só identificadores e resultados. Como rede de segurança, o
+  `redact` do pino censura `amount`, `balance`, `money`, `initialBalance`, `resultingBalance`,
+  `storedBalance`, `calculatedBalance`, `difference`, `balanceBefore`, `balanceAfter`, `payload`, `body` e
+  `data` em até 3 níveis. Erros de domínio são registrados só por `errorName`/`errorCode` (`errorFields`):
+  as mensagens deles podem citar saldo ou o valor rejeitado (ex.: `InsufficientFundsError`). Erros de
+  infraestrutura mantêm a mensagem. O `failureReason` de uma mensagem enviada à DLQ vai só nos atributos
+  da mensagem, nunca no log.
+- **Prova** (`test/integration/observability/logging.test.ts`): com o stream capturado, um roteiro com
+  HTTP (201, replay 200, 422, 400), SQS e worker verifica os identificadores em cada linha e que **nenhum**
+  dos valores monetários usados (escolhidos para serem únicos) aparece no texto bruto. A redaction é
+  testada à parte.
 
 ## 12. Trade-offs e limitações
 

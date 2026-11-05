@@ -2,6 +2,7 @@ import { applyDecision } from "../../domain/wager/apply-decision";
 import { decide } from "../../domain/wager/decide";
 import { WagerTransactionStatus as Status } from "../../domain/wager/kinds";
 import type { ReferenceRetryPolicy } from "../../domain/wager/reference-retry-policy";
+import { type Logger, silentLogger } from "../ports/logger";
 import type { PendingReferenceClaim } from "../ports/repositories";
 import type { Clock, IdGenerator } from "../ports/system";
 import type { TransactionRunner } from "../ports/transaction-runner";
@@ -24,6 +25,7 @@ export interface ResolvePendingReferenceDeps {
   batchSize: number;
   /** How long a claimed item stays reserved for this worker (crash safety). */
   leaseMs: number;
+  logger?: Logger;
 }
 
 /**
@@ -46,7 +48,14 @@ export class ResolvePendingReference {
   async runRound(): Promise<ResolveRoundResult> {
     const claims = await this.claim();
     const resolutions: Record<PendingResolution, number> = { PROCESSED: 0, REJECTED: 0, STILL_PENDING: 0, SKIPPED: 0 };
-    for (const claim of claims) resolutions[await this.resolve(claim)]++;
+    const log = this.deps.logger ?? silentLogger;
+    for (const claim of claims) {
+      const resolution = await this.resolve(claim);
+      resolutions[resolution]++;
+      const fields = { transactionId: claim.id, walletId: claim.walletId, correlationId: claim.id, resolution };
+      if (resolution === "STILL_PENDING" || resolution === "SKIPPED") log.debug(fields, "pending reference evaluated");
+      else log.info(fields, "pending reference resolved");
+    }
     return { claimed: claims.length, resolutions };
   }
 
