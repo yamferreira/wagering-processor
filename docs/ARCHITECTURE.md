@@ -345,6 +345,55 @@ calculado de forma independente via `sha256sum`) trava o algoritmo em teste.
 A garantia vem do banco (`UNIQUE(idempotency_key)` e `UNIQUE(provider_id, external_transaction_id)`,
 T09). Essa função só interpreta a colisão.
 
+### 7.3 Fluxo de `SubmitWagerTransaction` (T11)
+
+O mesmo use case atende HTTP e SQS (§10):
+
+1. **Validação antes do banco:** `Money.from` (contrato estrito), moeda suportada (A3), kind
+   externo (OPENING proibido), `WagerTransaction.create` (regras estruturais, A8) e `payloadHash`.
+   Erros aqui são 400 e nada é gravado.
+2. **Fast path sem lock:** busca pela idempotency key e, em seguida, pelo `(providerId, externalTransactionId)`.
+   Se existir, faz replay ou devolve conflito (§7.2). É o caminho comum dos reenvios do provedor.
+3. **Unidade de trabalho**, uma transação SQL:
+   1. `lockById(walletId)` (`FOR UPDATE`). Wallet inexistente gera `NotFoundError` e nada é gravado (A9);
+   2. **re-checagem** da idempotência sob o lock. Pedidos concorrentes com a mesma key na mesma
+      wallet fazem fila aqui, e o segundo encontra o primeiro já commitado e faz replay;
+   3. resolução da referência por `(providerId, referenceExternalTransactionId)` + `isReversed`;
+   4. `decide` → `applyDecision` (§4.5);
+   5. INSERT da transação → INSERT do lançamento → `UPDATE wallets … WHERE version = ?` → INSERT dos
+      eventos na outbox. Tudo commita junto ou nada commita.
+4. **Corrida que escapa das checagens** (a mesma key em wallets diferentes, que não compartilham
+   lock): o segundo INSERT espera o primeiro no índice único e recebe 23505. O use case relê o
+   vencedor e devolve replay ou conflito. O banco decide; a aplicação só interpreta.
+5. **Erros:**
+
+   | Situação | Resultado | Gravado? |
+   |---|---|---|
+   | validação | `ValidationError` / `InvalidMoneyError` → 400 | não |
+   | wallet inexistente | `NotFoundError` → 404 | não |
+   | conflito de idempotência | `IdempotencyConflictError` → 409 | não |
+   | regra de negócio | transação REJECTED + `failureCode` → 422 | sim (consome a key) |
+   | transitório (lock_timeout, conexão, deadlock esgotado) | `TransientInfrastructureError` → 503 | não (rollback) |
+   | erro interno permanente (bug, CHECK inesperado) | `InternalProcessingError` → 500; transação gravada como **FAILED** numa transação separada (best effort, A16) | sim |
+   | falha injetada / morte do processo | rollback total | não |
+
+**Atomicidade comprovada em teste:** falhas injetadas após o INSERT da transação, após o
+lançamento e antes da outbox não deixam nada gravado (nem transação, nem lançamento, nem saldo,
+nem evento), e o retry aplica exatamente uma vez.
+
+**Fault points** (`FaultInjector`, no-op em produção): pontos nomeados nos fluxos críticos, usados
+pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código de produção.
+
+### 7.4 Consultas e reconciliação (T11)
+
+- **Ledger:** o cursor é base64url de `{"v": wallet_version}` (opaco, A20). Como `wallet_version` é
+  único e crescente por wallet, as páginas não pulam nem repetem entradas mesmo com inserts concorrentes
+  (há teste). `limit` vai de 1 a 200, com default 50.
+- **Reconciliação (A19):** roda numa transação `REPEATABLE READ READ ONLY`, um snapshot consistente que
+  não bloqueia a wallet. Confere três coisas: `Σ CREDIT − Σ DEBIT == balance`, `balance_after` da última
+  entrada `== balance` e versão da última entrada `== version`. Divergências vão para um
+  `ReconciliationObserver` (log + métrica na T23) e **nunca são corrigidas**.
+
 ## 8. API HTTP e mapeamento de status
 
 _(T12)_
