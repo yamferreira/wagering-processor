@@ -46,8 +46,22 @@ export interface WagerTransactionRepository {
   isReversed(transactionId: string): Promise<boolean>;
 }
 
+export interface OutboxLag {
+  pending: number;
+  /** occurred_at of the oldest unpublished message. */
+  oldestPendingAt: Date | undefined;
+}
+
 export interface OutboxRepository {
   insert(messages: readonly OutboxMessage[]): Promise<void>;
+  /**
+   * Due, unpublished messages, oldest first, locked with `FOR UPDATE SKIP LOCKED`: concurrent
+   * publishers never claim the same row while the claiming transaction is open.
+   */
+  claimDue(now: Date, limit: number): Promise<OutboxMessage[]>;
+  /** Persists published_at / attempts / next_attempt_at / last_error after a publish attempt. */
+  saveDeliveryState(messages: readonly OutboxMessage[]): Promise<void>;
+  lag(): Promise<OutboxLag>;
 }
 
 export interface InboxRepository {

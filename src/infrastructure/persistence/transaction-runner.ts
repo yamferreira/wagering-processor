@@ -9,6 +9,8 @@ import { createRepositories } from "./repositories/mikro-orm-repositories";
 export interface TransactionRunnerOptions {
   lockTimeoutMs: number;
   statementTimeoutMs: number;
+  /** Optional idle_in_transaction_session_timeout for this transaction. */
+  idleInTransactionTimeoutMs?: number;
   /** Bounded in-place retries for deadlock / serialization failure / version conflict. */
   maxRetries: number;
 }
@@ -36,10 +38,14 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
       try {
         return await this.orm.em.fork().transactional(
           async (em) => {
-            await em.execute("SELECT set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)", [
-              `${this.options.lockTimeoutMs}ms`,
-              `${this.options.statementTimeoutMs}ms`,
-            ]);
+            await em.execute(
+              "SELECT set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true), set_config('idle_in_transaction_session_timeout', ?, true)",
+              [
+                `${this.options.lockTimeoutMs}ms`,
+                `${this.options.statementTimeoutMs}ms`,
+                `${this.options.idleInTransactionTimeoutMs ?? 0}ms`,
+              ],
+            );
             return work(createRepositories(em, this.clock));
           },
           {

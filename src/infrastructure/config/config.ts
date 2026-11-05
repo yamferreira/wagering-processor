@@ -8,6 +8,8 @@ const ConfigSchema = z.object({
   DB_POOL_MAX: intFromEnv(20),
   DB_LOCK_TIMEOUT_MS: intFromEnv(5_000),
   DB_STATEMENT_TIMEOUT_MS: intFromEnv(10_000),
+  /** Backstop for transactions left idle (e.g. the outbox publisher waiting on the broker). */
+  DB_IDLE_IN_TX_TIMEOUT_MS: intFromEnv(30_000),
   DB_TX_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(3),
   SQS_ENDPOINT: z.string().url().default("http://localhost:4566"),
   AWS_REGION: z.string().min(1).default("us-east-1"),

@@ -3,6 +3,7 @@ import type { EntityManager } from "@mikro-orm/postgresql";
 import { ConcurrencyConflictError } from "../../../application/errors";
 import type {
   InboxRepository,
+  OutboxLag,
   LedgerPage,
   LedgerRepository,
   LedgerSummary,
@@ -153,6 +154,51 @@ class MikroOrmOutboxRepository implements OutboxRepository {
   async insert(messages: readonly OutboxMessage[]): Promise<void> {
     if (messages.length === 0) return;
     await this.em.insertMany(OutboxRecord, messages.map(OutboxMapper.toRecord));
+  }
+
+  async claimDue(now: Date, limit: number): Promise<OutboxMessage[]> {
+    // Served by outbox_pending_due_idx (next_attempt_at) WHERE published_at IS NULL.
+    const records = await this.em.find(
+      OutboxRecord,
+      { publishedAt: null, nextAttemptAt: { $lte: now } },
+      {
+        orderBy: { nextAttemptAt: "asc", id: "asc" },
+        limit,
+        lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE, // FOR UPDATE SKIP LOCKED
+        disableIdentityMap: true,
+      },
+    );
+    return records.map(OutboxMapper.toDomain);
+  }
+
+  async saveDeliveryState(messages: readonly OutboxMessage[]): Promise<void> {
+    const published = messages.filter((m) => !m.isPending());
+    const byPublishedAt = new Map<number, string[]>();
+    for (const message of published) {
+      const at = message.publishedAt!.getTime();
+      byPublishedAt.set(at, [...(byPublishedAt.get(at) ?? []), message.id]);
+    }
+    for (const [at, ids] of byPublishedAt) {
+      await this.em.nativeUpdate(
+        OutboxRecord,
+        { id: { $in: ids }, publishedAt: null },
+        { publishedAt: new Date(at), nextAttemptAt: null },
+      );
+    }
+    for (const message of messages.filter((m) => m.isPending())) {
+      await this.em.nativeUpdate(
+        OutboxRecord,
+        { id: message.id, publishedAt: null },
+        { attempts: message.attempts, nextAttemptAt: message.nextAttemptAt ?? null, lastError: message.lastError ?? null },
+      );
+    }
+  }
+
+  async lag(): Promise<OutboxLag> {
+    const [row] = await this.em.execute<{ pending: number; oldest: Date | null }[]>(
+      "SELECT COUNT(*)::int AS pending, MIN(occurred_at) AS oldest FROM outbox_messages WHERE published_at IS NULL",
+    );
+    return { pending: row?.pending ?? 0, oldestPendingAt: row?.oldest ? new Date(row.oldest) : undefined };
   }
 }
 

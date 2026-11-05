@@ -521,6 +521,42 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 - **Fault injection em processos filhos:** env `FAULTS="<ponto>=<ação>[*n]"` (`crash` = SIGKILL em si
   mesmo, `throw`, `transient`, `delay:<ms>`), lida pelo `EnvFaultInjector`. Vazia em produção (no-op).
 
+### 9.3 Publisher da outbox (T15, §11, A24, A29)
+
+`PublishOutboxBatch` faz uma rodada numa única transação curta:
+
+```
+BEGIN
+  SELECT … FROM outbox_messages
+   WHERE published_at IS NULL AND next_attempt_at <= now
+   ORDER BY next_attempt_at, id LIMIT OUTBOX_BATCH_SIZE
+   FOR UPDATE SKIP LOCKED                       -- outbox_pending_due_idx
+  SendMessageBatch (10 por chamada, em paralelo) → wagering-events.fifo
+  UPDATE published_at = now()                    -- aceitos pelo broker
+  UPDATE attempts+1, next_attempt_at = now()+backoff, last_error   -- recusados/erro
+COMMIT
+```
+
+- **Por que segurar o lock durante o envio:** publishers concorrentes (quantas instâncias houver) nunca
+  pegam as mesmas linhas, e o lock é só de linhas da outbox, nunca de wallets. O envio tem timeout curto
+  (cliente SQS dedicado com 5s por request), e cada transação define `idle_in_transaction_session_timeout`
+  (`DB_IDLE_IN_TX_TIMEOUT_MS`, 30s) como rede de segurança: um publisher travado não segura linhas para sempre.
+- **Crash em qualquer ponto antes do COMMIT:** o lock some com a conexão e outro publisher assume as linhas.
+  Se o broker já tinha aceitado o lote, o evento é publicado de novo (**at-least-once, nunca perdido**). É
+  seguro porque o `eventId` é a chave de deduplicação: `MessageDeduplicationId = eventId` descarta
+  republicações dentro da janela de 5 min do FIFO, e fora dela o consumidor deduplica por inbox. Os testes
+  cobrem os dois pontos (`outbox:after-claim-before-publish` e `outbox:after-publish-before-mark`).
+- **SQS indisponível:** a falha vira `scheduleRetry` dentro da mesma transação (`attempts` cresce,
+  `next_attempt_at` segue 1s→60s com jitter de até −20%) e nada se perde. Sem limite de tentativas (A29).
+- **Destino:** corpo = envelope `IntegrationEvent.toJSON()`; atributo `eventType`;
+  `MessageGroupId = aggregateId` (wallet para `WalletBalanceChanged`, transação para os eventos de
+  transação). A ordem entre lotes/publishers não é garantida: consumidores usam `walletVersion` e `eventId`.
+- **Loop:** `PollingWorker` repete imediatamente enquanto o lote vem cheio e espera `OUTBOX_POLL_MS` quando
+  não; erros (ex.: banco fora) entram em backoff exponencial. `stop()` deixa a rodada atual terminar.
+- **Consumidor de eventos de referência (A25):** `test/support/event-audit-consumer.ts` aplica cada evento
+  a uma projeção na mesma transação que a sua linha de inbox (`events-audit`, `messageId = eventId`). Com
+  cada evento entregue 3 vezes, a projeção conta cada um exatamente uma vez.
+
 ## 10. Autenticação
 
 **Decisão:** não implementar. Autenticação não vale pontos (§2, §14) e não deve competir com
@@ -601,7 +637,7 @@ Pontos em que o enunciado do desafio é ambíguo, com a interpretação adotada.
 
 | Id | Tema | Interpretação adotada |
 |---|---|---|
-| A24 | Fila de eventos | `wagering-events.fifo`, `MessageGroupId = walletId`, `MessageDeduplicationId = eventId`. Consumidores usam `walletVersion` e `eventId`, não a ordem. |
+| A24 | Fila de eventos | `wagering-events.fifo`, `MessageGroupId = aggregateId` (a wallet, para `WalletBalanceChanged`), `MessageDeduplicationId = eventId`. Consumidores usam `walletVersion` e `eventId`, não a ordem. |
 | A25 | Consumidor de eventos | Consumidor de auditoria (teste) com inbox (`consumerName = events-audit`, `messageId = eventId`). |
 | A26 | `MessageGroupId` de entrada | Produtor deveria usar `walletId`, mas a correção não depende disso (testes usam groups aleatórios). |
 | A27 | Erros no consumidor | Negócio → ack. Transitório → `ChangeMessageVisibility` com backoff. Permanente → DLQ imediata. Limite de recebimentos na aplicação + redrive como rede de segurança. Detalhe em §9. |

@@ -2,6 +2,7 @@ import type { INestApplication } from "@nestjs/common";
 import type { AppConfig } from "../config/config";
 import { createHttpApp } from "../http/http-app";
 import { WagerTransactionConsumer } from "../messaging/consumers/wager-transaction.consumer";
+import { PollingWorker } from "../workers/polling-worker";
 import { buildContainer, type Container, type ContainerOverrides } from "./container";
 
 export type Role = AppConfig["ROLES"][number];
@@ -13,6 +14,7 @@ export interface Runtime {
   /** Bound HTTP port (when the api role runs). */
   port?: number;
   consumer?: WagerTransactionConsumer;
+  publisher?: PollingWorker;
   /** Graceful shutdown in reverse start order. Idempotent. */
   stop(): Promise<void>;
 }
@@ -50,6 +52,20 @@ export async function startRuntime(config: AppConfig, overrides: ContainerOverri
       );
       runtime.consumer.start();
     }
+    if (roles.includes("publisher")) {
+      const publisherLog = log.child({ component: "outbox-publisher" });
+      runtime.publisher = new PollingWorker(
+        async () => {
+          const result = await container.publishOutbox.execute();
+          if (result.claimed > 0) publisherLog.debug({ ...result }, "outbox batch");
+          if (result.failed > 0) publisherLog.warn({ ...result }, "outbox publish failures; rescheduled with backoff");
+          return { moreWork: result.claimed === config.OUTBOX_BATCH_SIZE };
+        },
+        { name: "outbox-publisher", idleDelayMs: config.OUTBOX_POLL_MS },
+        publisherLog,
+      );
+      runtime.publisher.start();
+    }
     if (roles.includes("api")) {
       runtime.http = await createHttpApp(container, {
         onUnexpectedError: (error) => log.error({ err: describe(error) }, "unexpected error"),
@@ -74,7 +90,10 @@ async function shutdown(runtime: Runtime): Promise<void> {
   const log = runtime.container.logger;
   // Stop accepting HTTP first, then drain message work, then release the pool.
   await runtime.http?.close().catch((error) => log.error({ err: describe(error) }, "http close failed"));
-  await runtime.consumer?.stop().catch((error) => log.error({ err: describe(error) }, "consumer stop failed"));
+  await Promise.all([
+    runtime.consumer?.stop().catch((error) => log.error({ err: describe(error) }, "consumer stop failed")),
+    runtime.publisher?.stop().catch((error) => log.error({ err: describe(error) }, "publisher stop failed")),
+  ]);
   await runtime.container.close();
   log.info({}, "runtime stopped");
 }

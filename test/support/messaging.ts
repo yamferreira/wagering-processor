@@ -1,4 +1,5 @@
 import type { FaultInjector } from "../../src/application/ports/fault-injector";
+import type { EventPublisher } from "../../src/application/ports/event-publisher";
 import type { Logger } from "../../src/application/ports/logger";
 import type { Wallet } from "../../src/domain/wallet/wallet";
 import type { AppConfig } from "../../src/infrastructure/config/config";
@@ -24,7 +25,10 @@ export interface MessagingHarness {
   container: Container;
   runtimes: Runtime[];
   /** Starts one more in-process instance (same DB and queues). */
-  start(overrides?: Partial<AppConfig>, options?: { faults?: FaultInjector; logger?: Logger }): Promise<Runtime>;
+  start(
+    overrides?: Partial<AppConfig>,
+    options?: { faults?: FaultInjector; logger?: Logger; decorate?: (publisher: EventPublisher) => EventPublisher },
+  ): Promise<Runtime>;
   openWallet(balance?: string, playerId?: string): Promise<Wallet>;
   close(): Promise<void>;
 }
@@ -76,7 +80,11 @@ export async function createMessagingHarness(
     async start(overrides = {}, startOptions = {}) {
       const runtime = await startRuntime(
         { ...config, ...overrides },
-        { faults: startOptions.faults ?? faults, ...(startOptions.logger ? { logger: startOptions.logger } : {}) },
+        {
+          faults: startOptions.faults ?? faults,
+          ...(startOptions.logger ? { logger: startOptions.logger } : {}),
+          ...(startOptions.decorate ? { decorateEventPublisher: startOptions.decorate } : {}),
+        },
       );
       runtimes.push(runtime);
       return runtime;
