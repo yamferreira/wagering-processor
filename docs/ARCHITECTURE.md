@@ -1,7 +1,7 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> Documento vivo: cada tarefa do `docs/PLAN.md` registra aqui as decisões que tomou.
-> As interpretações da especificação seguem a numeração `A1…A32` do PLAN.md.
+> Documento vivo: cada tarefa de implementação (T01…T27) registra aqui as decisões que tomou.
+> As interpretações da especificação (`A1…A32`) estão no [Apêndice A](#apêndice-a--interpretações-da-especificação-a1a32).
 
 ## 1. Visão geral
 
@@ -482,3 +482,55 @@ _(dia 3)_
 ## 12. Trade-offs e limitações
 
 _(contínuo)_
+
+## Apêndice A — Interpretações da especificação (A1–A32)
+
+Pontos em que o enunciado do desafio é ambíguo, com a interpretação adotada. As referências
+`Ax` espalhadas pelo código e por este documento apontam para cá; `§n` são seções do enunciado.
+
+### Regras de negócio
+
+| Id | Tema | Interpretação adotada |
+|---|---|---|
+| A1 | Formato de `amount` | Estrito `^(0\|[1-9]\d{0,17})\.\d{2}$`: rejeita `"25"`, `"25.5"`, zeros à esquerda e sinal. O hash não depende de normalização. |
+| A2 | Valor zero | BET/WIN/REFUND/ROLLBACK exigem > 0; LOSS aceita ≥ 0 (sem efeito no saldo); `initialBalance` ≥ 0, e 0 não gera OPENING nem lançamento. Fora disso, 400. |
+| A3 | Moedas | `^[A-Z]{3}$` com allowlist configurável (`SUPPORTED_CURRENCIES`, default `BRL,USD,EUR`), escala sempre 2. JPY/KWD fora de escopo. |
+| A4 | Reversão única | Uma BET é revertida no máximo uma vez, por REFUND **ou** ROLLBACK (índice parcial). `BET → REFUND → ROLLBACK(REFUND)` é permitido. ROLLBACK de LOSS, ROLLBACK ou OPENING → `REFERENCE_KIND_NOT_ALLOWED`. |
+| A5 | WIN/LOSS com referência | Referência opcional; se vier, valida provider, player, wallet, moeda, rodada e tipo BET. Ausente no banco → PENDING_REFERENCE. Vários WIN por BET são permitidos e o valor é livre. |
+| A6 | Liquidação × reversão | WIN de BET já revertida → `REFERENCE_ALREADY_REVERSED`. REFUND/ROLLBACK de BET que já tem WIN é **permitido** (risco documentado em §4.5: o provedor deve reverter o WIN antes). |
+| A7 | Referência não terminal ou falha | Referência em PENDING_REFERENCE → o dependente também espera. Referência REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`. |
+| A8 | Payload estruturalmente inválido | 400 sem persistir: BET com referência, autorreferência, kind OPENING, providerId reservado `internal`. |
+| A9 | Wallet inexistente | HTTP 404 `WALLET_NOT_FOUND` sem consumir a key. Na SQS: erro de negócio terminal (inbox + ack + métrica). |
+| A10 | O que vira REJECTED | Toda rejeição de regra após a wallet ser encontrada. Consome a key, grava o saldo observado e não gera lançamento. |
+| A11 | Status do replay | Status original: 200 PROCESSED, 422 REJECTED, 202 PENDING_REFERENCE, mesmo corpo e `idempotentReplay: true`. |
+| A12 | Replay após mudança de estado | Devolve o estado persistido atual; depois de terminal, é imutável (trigger). |
+| A13 | Unicidade do external id | `(providerId, externalTransactionId)` existente com outra key → 409 `EXTERNAL_TRANSACTION_CONFLICT`. A idempotency key é global, até 255 caracteres. |
+| A14 | Campos do hash | providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, amount, currency, referenceExternalTransactionId (omitido se ausente). Mesmo hash em HTTP e SQS. Detalhe em §7.1. |
+| A15 | Estado PENDING | Estado inicial em memória; nenhum fluxo commita PENDING. |
+| A16 | FAILED | Só para erro permanente não-negócio após o payload ser aceito (gravado numa tx separada, HTTP 500, SQS → DLQ). Erro transitório esgotado não vira FAILED. |
+| A17 | OPENING | `providerId = internal`, `externalTransactionId = opening:{walletId}`, key `internal:opening:{walletId}`, round/game NULL. Emite eventos; saldo inicial 0 não emite. |
+
+### Contrato da API
+
+| Id | Tema | Interpretação adotada |
+|---|---|---|
+| A18 | `POST /wallets` | Sem Idempotency-Key; deduplicação por `UNIQUE(player_id, currency)` → 409. |
+| A19 | Reconciliação | Snapshot `REPEATABLE READ` read-only; compara Σ ledger com o saldo e com o último `balance_after`. 200 com `consistent: false` em divergência; 404 sem wallet. |
+| A20 | Cursor do ledger | Ordem por `wallet_version`; cursor opaco (base64url de `{"v":n}`); `limit` 50 por padrão, máximo 200. |
+| A21 | Corpos não-201 | 202 e replays no formato de sucesso (`balance: null` se pendente); 422 no formato de erro com `failureCode` em `code`. |
+| A22 | Identificadores | `walletId` UUID; os demais ids são ASCII imprimível sem espaço, 1–128 caracteres. |
+| A23 | Provedores | Sem registro de provedores; `internal` é reservado. Autorização via `ProviderIdentityPort` (no-op). |
+
+### Mensageria e operação
+
+| Id | Tema | Interpretação adotada |
+|---|---|---|
+| A24 | Fila de eventos | `wagering-events.fifo`, `MessageGroupId = walletId`, `MessageDeduplicationId = eventId`. Consumidores usam `walletVersion` e `eventId`, não a ordem. |
+| A25 | Consumidor de eventos | Consumidor de auditoria (teste) com inbox (`consumerName = events-audit`, `messageId = eventId`). |
+| A26 | `MessageGroupId` de entrada | Produtor deveria usar `walletId`, mas a correção não depende disso (testes usam groups aleatórios). |
+| A27 | Erros no consumidor | Negócio → ack. Transitório → `ChangeMessageVisibility` com backoff. Permanente → DLQ imediata. Limite de recebimentos na aplicação + redrive como rede de segurança. Detalhe em §9. |
+| A28 | Limites de PENDING_REFERENCE | 10 tentativas, base 2s, fator 2, cap 5 min (configurável), mais wake-up imediato dos dependentes quando a referência é processada. |
+| A29 | Outbox | Sem limite de tentativas; backoff 1s→60s com jitter. Retenção/limpeza fora de escopo. |
+| A30 | Métrica de conflito de lock | Histograma de espera de lock + contadores de `lock_timeout`, deadlock e version mismatch. |
+| A31 | Instância | Um processo `bun run start`; `ROLES` separa API, consumidor, publisher e worker. |
+| A32 | Timeouts | `lock_timeout` 5s, `statement_timeout` 10s; deadlock/serialização com até 3 retries e jitter; depois, 503. |

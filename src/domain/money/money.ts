@@ -11,7 +11,7 @@ export const MONEY_SCALE = 2;
 const MINOR_PER_UNIT = 100n;
 
 /**
- * Strict input format (PLAN.md A1): non-negative, no sign, no leading zeros,
+ * Strict input format (docs/ARCHITECTURE.md, A1): non-negative, no sign, no leading zeros,
  * exactly two decimal places, at most 18 integer digits (fits NUMERIC(20,2)).
  */
 const AMOUNT_PATTERN = /^(0|[1-9]\d{0,17})\.\d{2}$/;

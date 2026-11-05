@@ -60,7 +60,7 @@ export interface HttpResponse {
 }
 
 /**
- * Submission outcome → HTTP (CLAUDE.md, A11): 201 new PROCESSED, 200 replayed PROCESSED,
+ * Submission outcome → HTTP (docs/ARCHITECTURE.md §8.2, A11): 201 new PROCESSED, 200 replayed PROCESSED,
  * 202 PENDING_REFERENCE, 422 REJECTED (with failureCode), 500 FAILED. A replay keeps the
  * original status code; `idempotentReplay` tells them apart.
  */

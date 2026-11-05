@@ -1,7 +1,7 @@
 # Distributed Wagering Processor
 
-Solução do desafio técnico da Jungle Gaming. A especificação está em `docs/CHALLENGE.md`,
-o plano em `docs/PLAN.md` e as decisões em `docs/ARCHITECTURE.md`.
+Solução do desafio técnico da Jungle Gaming. As decisões de arquitetura e as interpretações
+da especificação estão em `docs/ARCHITECTURE.md`.
 
 ## Pré-requisitos
 

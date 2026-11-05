@@ -3,7 +3,7 @@ import { buildContainer } from "./infrastructure/app/container";
 import { loadConfig } from "./infrastructure/config/config";
 import { createHttpApp } from "./infrastructure/http/http-app";
 
-/** Process entry point: API (workers are added in the day-2 tasks, see docs/PLAN.md). */
+/** Process entry point: API (workers are added in T14–T16). */
 async function main(): Promise<void> {
   const config = loadConfig();
   const container = await buildContainer(config);
