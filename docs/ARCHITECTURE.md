@@ -255,9 +255,65 @@ Há um database template migrado por processo de teste (`wagering_test_tpl_<pid>
 removidos na inicialização seguinte. `assertLedgerInvariant` compara tudo em SQL (`NUMERIC`), nunca
 em `number`, e tem um teste negativo que prova que detecta divergências.
 
+### 5.4 Mapeamento MikroORM (T10)
+
+- **Por que MikroORM:** `em.transactional()` com escopo explícito, `LockMode.PESSIMISTIC_WRITE`
+  e `EntitySchema`, que mapeia classes simples sem decorators e mantém o domínio puro.
+- **Records + mappers:** cada tabela tem uma classe de persistência (`WalletRecord`, …) mapeada por
+  `EntitySchema`. Os mappers convertem para os agregados via `rehydrate` e, na volta, para records.
+  O domínio não conhece o ORM.
+- **Money:** colunas `NUMERIC(20,2)` mapeadas como `decimal`. O driver devolve **string**
+  (`"25.00"`), verificado em teste, e o mapper reconstrói com `Money.from` (que revalida o formato)
+  mais a coluna `currency`. Na escrita vai `money.amount` (string). Nunca há conversão para `number`.
+- **Operações nativas em vez de flush implícito:** os repositórios usam `em.insert`,
+  `em.nativeUpdate` e `em.find` (com `disableIdentityMap`) dentro de `em.transactional()`. A ordem do
+  SQL fica explícita e auditável (transação → lançamento → wallet → outbox), sem depender do
+  change-set do Unit of Work. Também nunca existe entidade gerenciada "suja" que o commit possa gravar
+  sem querer. O Unit of Work do MikroORM continua demarcando a transação (fork por unidade de trabalho).
+- **`TransactionRunner` (porta):** `run(work)` abre um fork novo e uma transação READ COMMITTED,
+  e define `lock_timeout` e `statement_timeout` via `set_config(…, true)` (valem só para essa
+  transação). Erros do driver são traduzidos (`db-errors.ts`):
+
+  | SQLSTATE / condição | Erro de aplicação | Tratamento |
+  |---|---|---|
+  | 23505 | `UniqueViolationError(constraint)` | o use case decide (replay / 409) |
+  | 40P01 deadlock, 40001 serialization, version mismatch | `TransientInfrastructureError` | até `DB_TX_MAX_RETRIES` (3) retries com backoff curto **re-executando a unidade inteira**; depois, 503 |
+  | 55P03 lock_timeout, 57014 statement_timeout, 08xxx/57P0x/53300, ECONNREFUSED… | `TransientInfrastructureError` | sem retry local → 503 / retry da SQS |
+  | demais (ex.: 23514 CHECK) | erro original | permanente → FAILED / 500 (A16) |
+
+  Como o retry re-executa a função inteira, ela relê tudo do banco e não depende de estado externo mutável.
+- **`read(work)`:** leituras sem transação (cada statement vê o último commit).
+
 ## 6. Concorrência
 
-_(T10)_
+### 6.1 Estratégia (T10, §8)
+
+**Lock pessimista por linha de wallet** (`SELECT … FOR UPDATE` via
+`LockMode.PESSIMISTIC_WRITE`) dentro de `em.transactional()`, com mais duas barreiras:
+
+1. `UPDATE wallets … WHERE id = ? AND version = ?`. Se afetar 0 linhas, lança
+   `ConcurrencyConflictError`. Nunca deveria acontecer sob o lock: é a defesa contra lost update
+   caso alguém escreva sem o lock.
+2. `CHECK (balance >= 0)`, `UNIQUE (wallet_id, wallet_version)` e os triggers deferred saldo ⇔
+   ledger (§5.2), que são a última linha de defesa no banco.
+
+**Por que pessimista e não otimista:** wallets "quentes" (um jogador com muitas apostas por
+segundo, ou rodadas de slot em sequência) com optimistic locking geram uma tempestade de retries:
+N requisições concorrentes produzem N−1 conflitos e retries a cada rodada, com latência de cauda
+imprevisível. Com `FOR UPDATE`, as requisições da mesma wallet fazem fila no próprio PostgreSQL,
+cada uma lê o saldo já commitado pela anterior e decide uma vez. Não há read → calculate →
+update sem lock.
+
+**Sem lock global:** o lock é só da linha da wallet. Wallets diferentes rodam em paralelo,
+provado por teste determinístico: com a wallet X travada, a Y faz commit e a X expira por `lock_timeout`.
+
+**Limites:** `lock_timeout = 5s` (`DB_LOCK_TIMEOUT_MS`) evita filas infinitas atrás de uma
+transação travada; ao estourar, a requisição recebe 503 e pode ser reenviada com a mesma key.
+Transações curtas (sem I/O externo dentro do lock, já que a publicação é via outbox) mantêm o tempo de lock em milissegundos.
+
+**Ordem global de locks:** wallet primeiro, depois linhas de `wager_transactions`. Nenhum fluxo
+trava duas wallets (a referência pertence à mesma wallet, garantido por FK composta), então não
+existe deadlock entre wallets.
 
 ## 7. Idempotência
 
