@@ -40,6 +40,8 @@ const ConfigSchema = z.object({
         .filter(Boolean),
     )
     .pipe(z.array(z.enum(["api", "consumer", "publisher", "pending-worker"])).min(1)),
+  /** How long a graceful stop waits for in-flight work before handing messages back. */
+  SHUTDOWN_GRACE_MS: intFromEnv(10_000),
   /** Test-only fault injection (FAULTS=point:action,...); ignored unless set. */
   FAULTS: z.string().default(""),
   SUPPORTED_CURRENCIES: z

@@ -26,10 +26,10 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 60000",
     "test:unit": "bun test test/unit",
-    "test:integration": "bun test test/integration",
-    "test:concurrency": "bun test test/concurrency",
+    "test:integration": "bun test --timeout 60000 test/integration",
+    "test:concurrency": "bun test --timeout 120000 test/concurrency",
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down",
     "sqs:setup": "bun run scripts/setup-queues.ts"

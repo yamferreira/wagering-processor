@@ -33,6 +33,8 @@ export interface OutgoingMessage {
   body: string;
   groupId: string;
   deduplicationId: string;
+  /** String message attributes (e.g. failure classification on DLQ moves). */
+  attributes?: Record<string, string>;
 }
 
 export interface ReceivedMessage {
@@ -41,6 +43,8 @@ export interface ReceivedMessage {
   body: string;
   /** ApproximateReceiveCount (1 on first delivery). */
   receiveCount: number;
+  groupId: string;
+  attributes: Record<string, string>;
 }
 
 export interface BatchSendResult {
@@ -51,18 +55,40 @@ export interface BatchSendResult {
 
 /** Thin, typed wrapper over one queue URL. No business logic lives here. */
 export class SqsQueue {
+  private resolved: string | undefined;
+  private resolving: Promise<string> | undefined;
+
+  /**
+   * `url` may be a resolver (e.g. GetQueueUrl by name) so a process can boot while SQS is down;
+   * the URL is resolved on first use and cached (a failed resolution is retried next time).
+   */
   constructor(
     readonly client: SQSClient,
-    readonly url: string,
-  ) {}
+    private readonly url: string | (() => Promise<string>),
+  ) {
+    if (typeof url === "string") this.resolved = url;
+  }
+
+  async queueUrl(): Promise<string> {
+    if (this.resolved) return this.resolved;
+    this.resolving ??= (this.url as () => Promise<string>)().then(
+      (value) => (this.resolved = value),
+      (error) => {
+        this.resolving = undefined;
+        throw error;
+      },
+    );
+    return this.resolving;
+  }
 
   async send(message: OutgoingMessage): Promise<string> {
     const result = await this.client.send(
       new SendMessageCommand({
-        QueueUrl: this.url,
+        QueueUrl: await this.queueUrl(),
         MessageBody: message.body,
         MessageGroupId: message.groupId,
         MessageDeduplicationId: message.deduplicationId,
+        ...(message.attributes ? { MessageAttributes: toMessageAttributes(message.attributes) } : {}),
       }),
     );
     return result.MessageId ?? "";
@@ -74,7 +100,7 @@ export class SqsQueue {
     if (messages.length > 10) throw new RangeError("SQS batches hold at most 10 messages");
     const result = await this.client.send(
       new SendMessageBatchCommand({
-        QueueUrl: this.url,
+        QueueUrl: await this.queueUrl(),
         Entries: messages.map((message, index) => ({
           Id: String(index),
           MessageBody: message.body,
@@ -96,11 +122,12 @@ export class SqsQueue {
   async receive(options: { max?: number; waitSeconds?: number; visibilityTimeout?: number; abortSignal?: AbortSignal } = {}): Promise<ReceivedMessage[]> {
     const result = await this.client.send(
       new ReceiveMessageCommand({
-        QueueUrl: this.url,
+        QueueUrl: await this.queueUrl(),
         MaxNumberOfMessages: Math.min(options.max ?? 10, 10),
         WaitTimeSeconds: options.waitSeconds ?? 0,
         ...(options.visibilityTimeout !== undefined ? { VisibilityTimeout: options.visibilityTimeout } : {}),
-        MessageSystemAttributeNames: ["ApproximateReceiveCount"],
+        MessageSystemAttributeNames: ["ApproximateReceiveCount", "MessageGroupId"],
+        MessageAttributeNames: ["All"],
       }),
       options.abortSignal ? { abortSignal: options.abortSignal } : {},
     );
@@ -108,17 +135,17 @@ export class SqsQueue {
   }
 
   async delete(receiptHandle: string): Promise<void> {
-    await this.client.send(new DeleteMessageCommand({ QueueUrl: this.url, ReceiptHandle: receiptHandle }));
+    await this.client.send(new DeleteMessageCommand({ QueueUrl: await this.queueUrl(), ReceiptHandle: receiptHandle }));
   }
 
   async changeVisibility(receiptHandle: string, seconds: number): Promise<void> {
     await this.client.send(
-      new ChangeMessageVisibilityCommand({ QueueUrl: this.url, ReceiptHandle: receiptHandle, VisibilityTimeout: seconds }),
+      new ChangeMessageVisibilityCommand({ QueueUrl: await this.queueUrl(), ReceiptHandle: receiptHandle, VisibilityTimeout: seconds }),
     );
   }
 
   async attributes(names: QueueAttributeName[] = ["All"]): Promise<Record<string, string>> {
-    const result = await this.client.send(new GetQueueAttributesCommand({ QueueUrl: this.url, AttributeNames: names }));
+    const result = await this.client.send(new GetQueueAttributesCommand({ QueueUrl: await this.queueUrl(), AttributeNames: names }));
     return result.Attributes ?? {};
   }
 
@@ -143,5 +170,15 @@ function toReceived(message: Message): ReceivedMessage {
     receiptHandle: message.ReceiptHandle ?? "",
     body: message.Body ?? "",
     receiveCount: Number(message.Attributes?.ApproximateReceiveCount ?? 1),
+    groupId: message.Attributes?.MessageGroupId ?? "",
+    attributes: Object.fromEntries(
+      Object.entries(message.MessageAttributes ?? {}).map(([key, value]) => [key, value.StringValue ?? ""]),
+    ),
   };
+}
+
+function toMessageAttributes(attributes: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(attributes).map(([key, value]) => [key, { DataType: "String", StringValue: value }]),
+  );
 }

@@ -39,6 +39,11 @@ export interface SubmitResult {
 export interface SubmitHooks {
   /** Runs inside the same SQL transaction, before the wager is evaluated (e.g. the inbox insert). */
   withinTransaction?: (repos: Repositories) => Promise<void>;
+  /**
+   * Errors the caller owns (e.g. the inbox duplicate raised by its own hook): rethrown as-is,
+   * never recorded as FAILED.
+   */
+  passthrough?: (error: unknown) => boolean;
 }
 
 export interface SubmitWagerDeps {
@@ -64,7 +69,7 @@ export class InternalProcessingError extends ApplicationError {
 
 const IDEMPOTENCY_CONSTRAINTS = new Set(["wager_tx_idempotency_key_uq", "wager_tx_provider_external_uq"]);
 
-type UnitResult = { type: "NEW"; transaction: WagerTransaction } | { type: "EXISTING"; transaction: WagerTransaction };
+type UnitResult = { type: "NEW"; transaction: WagerTransaction } | { type: "EXISTING"; result: SubmitResult };
 
 /**
  * The single entry point for wager submissions, shared by HTTP and SQS (§10).
@@ -97,8 +102,9 @@ export class SubmitWagerTransaction {
         const wallet = await repos.wallets.lockById(props.walletId);
         if (!wallet) throw new NotFoundError("WALLET", props.walletId);
 
+        // Evaluated inside the transaction: a conflict rolls back whatever the hook wrote (inbox).
         const existing = await findExisting(repos, props);
-        if (existing) return { type: "EXISTING", transaction: existing };
+        if (existing) return { type: "EXISTING", result: resolveExisting(existing, identity) };
 
         const tx = WagerTransaction.create(props);
         const lookup = tx.hasReference() ? await resolveReference(repos, tx) : undefined;
@@ -122,6 +128,7 @@ export class SubmitWagerTransaction {
         return { type: "NEW", transaction: tx };
       });
     } catch (error) {
+      if (hooks.passthrough?.(error)) throw error;
       if (error instanceof UniqueViolationError && error.constraint && IDEMPOTENCY_CONSTRAINTS.has(error.constraint)) {
         const existing = await runner.read((repos) => findExisting(repos, props));
         if (existing) return resolveExisting(existing, identity);
@@ -133,7 +140,7 @@ export class SubmitWagerTransaction {
       throw error;
     }
 
-    if (result.type === "EXISTING") return resolveExisting(result.transaction, identity);
+    if (result.type === "EXISTING") return result.result;
     await faults.checkpoint("submit:after-commit");
     return { transaction: result.transaction, replay: false };
   }

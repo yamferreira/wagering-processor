@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   ConcurrencyConflictError,
   TransientInfrastructureError,
@@ -15,6 +15,9 @@ import { WagerTransaction } from "../../../src/domain/wager/wager-transaction";
 import { Wallet } from "../../../src/domain/wallet/wallet";
 import { assertLedgerInvariant } from "../../support/invariants";
 import { createPersistenceHarness, type PersistenceHarness } from "../../support/persistence";
+
+// Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
+setDefaultTimeout(60_000);
 
 let h: PersistenceHarness;
 const id = () => Bun.randomUUIDv7();

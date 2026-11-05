@@ -1,10 +1,13 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { WalletAlreadyExistsError } from "../../../src/application/errors";
 import { ValidationError } from "../../../src/domain/errors";
 import { InvalidMoneyError } from "../../../src/domain/money/money.errors";
 import { assertLedgerInvariant } from "../../support/invariants";
 import { countRows, ledgerRows, outboxEventTypes, transactionRows, walletRow } from "../../support/inspect";
 import { createUseCaseHarness, CTX, type UseCaseHarness } from "../../support/use-cases";
+
+// Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
+setDefaultTimeout(60_000);
 
 let h: UseCaseHarness;
 const player = () => `player-${Bun.randomUUIDv7()}`;

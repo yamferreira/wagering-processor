@@ -1,29 +1,39 @@
 import "reflect-metadata";
-import { buildContainer } from "./infrastructure/app/container";
+import { startRuntime } from "./infrastructure/app/runtime";
 import { loadConfig } from "./infrastructure/config/config";
-import { createHttpApp } from "./infrastructure/http/http-app";
 
-/** Process entry point: API (workers are added in T14–T16). */
+/**
+ * Process entry point: `bun run start` runs the roles listed in ROLES (default: all).
+ *
+ * Graceful shutdown on SIGTERM/SIGINT (containers, terminals). When the process was spawned
+ * with an IPC channel, a `{ type: "shutdown" }` message triggers the same path: on Windows,
+ * Bun delivers `kill("SIGTERM")` to a child as an immediate termination, so the test harness
+ * uses IPC there (see docs/ARCHITECTURE.md §9).
+ */
 async function main(): Promise<void> {
   const config = loadConfig();
-  const container = await buildContainer(config);
-  const app = await createHttpApp(container, {
-    onUnexpectedError: (error) => console.error(JSON.stringify({ level: "error", msg: "unexpected error", error: String(error) })),
-  });
-  await app.listen(config.PORT);
-  console.log(JSON.stringify({ level: "info", msg: "http listening", port: config.PORT }));
+  const runtime = await startRuntime(config);
+  const log = runtime.container.logger;
 
   let stopping = false;
   const shutdown = async (signal: string) => {
     if (stopping) return;
     stopping = true;
-    console.log(JSON.stringify({ level: "info", msg: "shutting down", signal }));
-    await app.close();
-    await container.close();
-    process.exit(0);
+    log.info({ signal }, "shutting down");
+    // Hard deadline: a stuck dependency must never keep a terminating process alive.
+    setTimeout(() => process.exit(1), Math.max(config.SHUTDOWN_GRACE_MS, config.SQS_WAIT_TIME_S * 1_000) + 10_000).unref();
+    try {
+      await runtime.stop();
+    } finally {
+      process.exit(0);
+    }
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("message", (message: unknown) => {
+    if ((message as { type?: string })?.type === "shutdown") void shutdown("IPC");
+  });
+  process.send?.({ type: "ready", roles: runtime.roles, port: runtime.port });
 }
 
 await main();

@@ -1,7 +1,10 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createTestDatabase, expectSqlError, type TestDatabase } from "../../support/db";
 import { assertLedgerInvariant, findLedgerDivergences } from "../../support/invariants";
 import { insertLedger, insertTx, type SeededWallet, seedBet, seedWallet, uuid } from "../../support/sql-fixtures";
+
+// Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
+setDefaultTimeout(60_000);
 
 /**
  * Every guarantee of §5/§6 that lives in the schema, probed with raw SQL that bypasses the

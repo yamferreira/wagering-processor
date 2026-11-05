@@ -255,6 +255,13 @@ Há um database template migrado por processo de teste (`wagering_test_tpl_<pid>
 removidos na inicialização seguinte. `assertLedgerInvariant` compara tudo em SQL (`NUMERIC`), nunca
 em `number`, e tem um teste negativo que prova que detecta divergências.
 
+- **Timeout de teste:** o Bun 1.3.14 ignora `[test] timeout` do bunfig e aplica `setDefaultTimeout` de um
+  preload só ao primeiro arquivo (verificado). Por isso cada arquivo de integração/concorrência chama
+  `setDefaultTimeout` no topo, e os scripts do package.json passam `--timeout`.
+- **Mensageria em teste:** `createMessagingHarness` cria um banco novo, filas reais no LocalStack com
+  prefixo único e runtimes in-process com os papéis pedidos; `spawnInstance` sobe processos reais de
+  `src/main.ts` (prontidão via IPC, nenhum órfão: todos são mortos no teardown e no exit do runner).
+
 ### 5.4 Mapeamento MikroORM (T10)
 
 - **Por que MikroORM:** `em.transactional()` com escopo explícito, `LockMode.PESSIMISTIC_WRITE`
@@ -465,6 +472,54 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
   o MiniStack.
 - **Isolamento em teste:** cada arquivo de teste cria suas próprias filas com prefixo único
   (`t<pid>-<label>-<rand>-…`) e as apaga no `afterAll`.
+
+### 9.2 Consumidor de `WagerTransactionRequested` (T14, §10, A9, A27)
+
+**Fluxo por mensagem** (`HandleWagerMessage` + `WagerTransactionConsumer`):
+
+1. `parseWagerEnvelope`: JSON e schema estrito (o mesmo contrato do body HTTP + `idempotencyKey`;
+   `correlationId` opcional). `payloadHash` da inbox = SHA-256 do envelope canônico.
+2. Fast path: `inbox.find(consumerName, messageId)`. Já existe com o mesmo hash → duplicata, ack sem
+   tocar em nada. Hash diferente → `MESSAGE_ID_CONFLICT` (DLQ).
+3. **O mesmo use case da HTTP** (`SubmitWagerTransaction`) com um hook que insere a linha da inbox
+   **dentro da mesma transação SQL** do wager, ledger, wallet e outbox (§11). O hook roda antes do lock
+   da wallet: duas entregas concorrentes da mesma mensagem colidem na PK da inbox (a segunda espera o
+   commit da primeira e recebe 23505 → duplicata), sem nem disputar a wallet.
+4. O veredito de idempotência (replay × conflito) é avaliado **dentro** da transação: um conflito
+   (`IDEMPOTENCY_KEY_REUSED`/`EXTERNAL_TRANSACTION_CONFLICT`) faz rollback também da linha da inbox, então
+   um redrive da DLQ volta a falhar do mesmo jeito em vez de virar uma "duplicata" silenciosa.
+5. Commit → fault point `consumer:after-commit-before-ack` → `DeleteMessage` (ack).
+
+**Classificação de falhas** (`classifyConsumerError`):
+
+| Situação | Ação | Detalhe |
+|---|---|---|
+| PROCESSED, REJECTED (regra de negócio), PENDING_REFERENCE, replay | ack | rejeição é resultado, não erro |
+| Wallet inexistente (A9) | ack | grava só a inbox (tx separada) e conta como terminal |
+| `TransientInfrastructureError` ou erro não classificado | retry | `ChangeMessageVisibility(min(base·2^receiveCount, cap))`; no `SQS_MAX_RECEIVES`-ésimo recebimento vai para a DLQ |
+| Envelope inválido, `ValidationError`/money, conflito de idempotência, `MESSAGE_ID_CONFLICT`, FAILED (A16) | DLQ imediata | determinístico: repetir não ajuda |
+| `InjectedFaultError` (teste) | abandon | sem ack e sem mudar a visibilidade: simula a morte do processo |
+
+- **Ida para a DLQ** feita pela aplicação: `SendMessage` na DLQ (com atributos `failureAction`,
+  `failureCode`, `failureReason`, `receiveCount`) e depois `DeleteMessage` na entrada. Um crash entre os
+  dois deixa uma cópia na DLQ e uma reentrega, que a inbox deduplica. O `RedrivePolicy`
+  (`maxReceiveCount=6` > `SQS_MAX_RECEIVES=5`) é só a rede de segurança para crash loops (ex.: o processo
+  morre sempre na mesma mensagem e nunca chega a classificar).
+- **Ordem:** mensagens do mesmo `MessageGroupId` num lote são processadas em sequência; grupos diferentes,
+  em paralelo (`CONSUMER_CONCURRENCY`). A correção não depende disso (A26).
+- **Shutdown gracioso:** para de fazer polling, dá `SHUTDOWN_GRACE_MS` para as mensagens em andamento e
+  devolve as restantes com `ChangeMessageVisibility(0)`. **O long poll aberto não é abortado:** abortar só
+  cancela o lado do cliente, e o broker entregaria a mensagem devolvida a esse poll "morto", deixando-a
+  invisível por um visibility timeout inteiro. Esse bug foi pego pelo teste com processo real e corrigido:
+  o poll termina sozinho em até `SQS_WAIT_TIME_S` e o que ele trouxer é devolvido na hora. Uma mensagem
+  devolvida cuja transação ainda termina durante o fechamento do pool não gera duplicata: a reentrega cai
+  na inbox. O `main.ts` tem um deadline duro (`max(grace, wait) + 10s`) para nunca travar o término.
+- **Sinais no Windows:** o Bun entrega `kill("SIGTERM")` a um processo filho como término imediato no
+  Windows (verificado: exit 143 sem rodar o handler). O processo trata SIGTERM/SIGINT (Linux/containers) e
+  também uma mensagem IPC `{ type: "shutdown" }`, que dispara o mesmo caminho. O harness de testes usa
+  SIGTERM real em POSIX e IPC no Windows.
+- **Fault injection em processos filhos:** env `FAULTS="<ponto>=<ação>[*n]"` (`crash` = SIGKILL em si
+  mesmo, `throw`, `transient`, `delay:<ms>`), lida pelo `EnvFaultInjector`. Vazia em produção (no-op).
 
 ## 10. Autenticação
 

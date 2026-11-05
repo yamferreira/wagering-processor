@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   type ProviderIdentityPort,
   UnauthenticatedError,
@@ -6,6 +6,9 @@ import {
 import { createHttpHarness, type HttpHarness } from "../../support/http";
 import { assertLedgerInvariant } from "../../support/invariants";
 import { walletRow } from "../../support/inspect";
+
+// Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
+setDefaultTimeout(60_000);
 
 let h: HttpHarness;
 

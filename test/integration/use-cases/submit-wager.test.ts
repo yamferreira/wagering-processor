@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { NotFoundError, TransientInfrastructureError, TransientReason } from "../../../src/application/errors";
 import { InjectedFaultError } from "../../../src/application/ports/fault-injector";
 import { InternalProcessingError } from "../../../src/application/use-cases/submit-wager-transaction";
@@ -11,6 +11,9 @@ import type { Wallet } from "../../../src/domain/wallet/wallet";
 import { assertLedgerInvariant } from "../../support/invariants";
 import { countRows, ledgerRows, outboxEventTypes, transactionRows, walletRow } from "../../support/inspect";
 import { createUseCaseHarness, CTX, type UseCaseHarness, wagerCommand } from "../../support/use-cases";
+
+// Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
+setDefaultTimeout(60_000);
 
 let h: UseCaseHarness;
 

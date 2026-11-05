@@ -1,6 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { provisionQueues } from "../../../src/infrastructure/messaging/sqs/queue-provisioner";
 import { SQS_ENDPOINT, createTestQueues, type TestQueues } from "../../support/sqs";
+
+// Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
+setDefaultTimeout(60_000);
 
 /**
  * T13: validates the LocalStack (4.14.0) features the consumer and the publisher rely on:
