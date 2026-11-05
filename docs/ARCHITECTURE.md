@@ -111,6 +111,41 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
 - **Imutabilidade do lançamento:** campos `readonly` + `Object.freeze`, e datas copiadas
   defensivamente. `create` valida a aritmética, valores positivos, uma única moeda, saldos não negativos e `walletVersion ≥ 1`.
 
+### 4.4 WagerTransaction: máquina de estados (T05)
+
+```
+            ┌──────────────► PROCESSED  (terminal)
+            │
+ PENDING ───┼──────────────► REJECTED   (terminal)
+   │        │
+   │        └──────────────► FAILED     (terminal)
+   │
+   └──► PENDING_REFERENCE ──► PROCESSED | REJECTED | FAILED
+              │   ▲
+              └───┘ reagendamento (attempts + 1)
+```
+
+- Tabela explícita em `VALID_TRANSITIONS` (`src/domain/wager/kinds.ts`). Sair de um estado
+  terminal lança `InvalidTransactionStateError`, que é erro de programação e não caminho de negócio.
+- **PENDING (A15)** é o estado inicial em memória. Na mesma transação SQL a transação vai para
+  PROCESSED, REJECTED ou PENDING_REFERENCE. Nenhum fluxo commita PENDING.
+- **`processedAt`** é preenchido ao atingir qualquer estado terminal: é o instante da decisão.
+- **`resultingBalance`** guarda o saldo observado na decisão (pós-movimento em PROCESSED,
+  saldo inalterado em REJECTED). É o que o replay idempotente devolve (§7).
+- **`referenceAttempts` / `nextReferenceAttemptAt`:** controle do worker de PENDING_REFERENCE.
+  A primeira marcação agenda sem contar tentativa; cada reagendamento conta uma.
+- **Validação em `create` (A2, A5, A8):**
+  - OPENING é proibido (existe `createOpening`, interno);
+  - REFUND e ROLLBACK exigem referência, BET não pode ter;
+  - autorreferência é proibida;
+  - `providerId = "internal"` é reservado;
+  - valor > 0, exceto LOSS (≥ 0);
+  - campos de identificação não podem ser vazios.
+- **`ledgerDirectionFor`:** BET → DEBIT; WIN, REFUND, OPENING → CREDIT; ROLLBACK → inverso da
+  direção da referência, que só pode ser BET, WIN ou REFUND; LOSS → sem lançamento.
+- **OPENING (A17):** `providerId = "internal"`, `externalTransactionId = "opening:{walletId}"`,
+  `idempotencyKey = "internal:opening:{walletId}"`, sem `roundId`/`gameId`, criada já PROCESSED.
+
 ## 5. Persistência e schema
 
 _(T09/T10)_
