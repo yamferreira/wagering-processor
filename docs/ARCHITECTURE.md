@@ -61,6 +61,35 @@ idempotência persistente, Transactional Outbox e Inbox.
 - **Erros:** `InvalidMoneyError`, `InvalidCurrencyError`, `CurrencyMismatchError`,
   `MoneyOverflowError`, todos subclasses de `DomainError`, com `code` estável.
 
+### 4.2 Taxonomia de `failureCode` (T03, §7.2)
+
+Todo código é **terminal para a sua idempotency key**: reenviar a mesma requisição devolve o
+mesmo resultado (replay). Para tentar de novo após corrigir algo, o provedor precisa de uma key nova.
+Falhas transitórias de infraestrutura **não** são `failureCode`: elas viram HTTP 503 ou retry na SQS,
+e o reenvio com a mesma key é seguro.
+
+| Código | Quando | Ação do provedor |
+|---|---|---|
+| `INSUFFICIENT_FUNDS` | BET maior que o saldo | `GIVE_UP` |
+| `REVERSAL_INSUFFICIENT_FUNDS` | ROLLBACK de WIN/REFUND deixaria o saldo negativo | `CONTACT_OPERATOR` |
+| `CURRENCY_MISMATCH` | moeda da operação ≠ moeda da wallet | `FIX_PAYLOAD` |
+| `WALLET_PLAYER_MISMATCH` | `playerId` não é o dono da `walletId` | `FIX_PAYLOAD` |
+| `REFERENCE_NOT_FOUND` | referência não chegou dentro do orçamento de PENDING_REFERENCE | `FIX_PAYLOAD` (enviar a referência e reenviar com key nova) |
+| `REFERENCE_MISMATCH` | referência de outro provider/player/wallet/moeda/rodada (`details.field`) | `FIX_PAYLOAD` |
+| `REFERENCE_KIND_NOT_ALLOWED` | REFUND de não-BET, ROLLBACK de LOSS/ROLLBACK/OPENING, WIN/LOSS referenciando não-BET | `FIX_PAYLOAD` |
+| `REFERENCE_NOT_PROCESSED` | referência terminou REJECTED/FAILED | `GIVE_UP` |
+| `REFERENCE_AMOUNT_MISMATCH` | valor da reversão ≠ valor da referência | `FIX_PAYLOAD` |
+| `REFERENCE_ALREADY_REVERSED` | referência já revertida (ou WIN sobre BET revertida, A6) | `GIVE_UP` |
+| `INTERNAL_INVARIANT_VIOLATION` | erro permanente interno após o aceite (status FAILED, A16) | `CONTACT_OPERATOR` |
+
+O saldo insuficiente numa BET e numa reversão têm códigos e ações diferentes. A primeira é rotina;
+a segunda indica um estado contábil que precisa de intervenção (§7).
+
+> Desvio menor do PLAN (T03): o plano previa a ação `RETRY`. Ela não existe porque nenhum
+> `failureCode` é retentável com a mesma key; o retry fica restrito a 503 e transientes.
+
+`WALLET_NOT_FOUND` (A9) não é `failureCode`: a transação não é persistida (FK) e a resposta é 404.
+
 ## 5. Persistência e schema
 
 _(T09/T10)_
