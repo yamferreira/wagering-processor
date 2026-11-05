@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + unit + integration + concurrency (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: wagering
+          POSTGRES_PASSWORD: wagering
+          POSTGRES_DB: wagering
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U wagering -d wagering"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      localstack:
+        image: localstack/localstack:4.14.0
+        env:
+          SERVICES: sqs
+          AWS_DEFAULT_REGION: us-east-1
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -fs http://localhost:4566/_localstack/health | grep -Eq 'sqs.{0,4}(available|running)'"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 40
+
+    env:
+      DATABASE_URL: postgres://wagering:wagering@localhost:55432/wagering
+      SQS_ENDPOINT: http://localhost:4566
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Bun version matches package.json
+        run: |
+          expected="$(jq -r '.packageManager' package.json | sed 's/^bun@//')"
+          actual="$(bun --version)"
+          echo "packageManager=bun@$expected, runner=bun@$actual"
+          test "$expected" = "$actual"
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # Service containers cannot receive command arguments, so max_connections (300, as in
+      # docker-compose.yml) is set with ALTER SYSTEM and the container is restarted.
+      - name: Configure PostgreSQL (max_connections = 300)
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U wagering -d wagering -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart ${{ job.services.postgres.id }}
+          for i in $(seq 1 60); do
+            docker exec ${{ job.services.postgres.id }} pg_isready -U wagering -d wagering && break
+            sleep 1
+          done
+          docker exec ${{ job.services.postgres.id }} psql -U wagering -d wagering -tAc "SHOW max_connections"
+
+      - name: Migrations and queues (README path)
+        run: |
+          bun run migration:up
+          bun run migration:down
+          bun run migration:up
+          bun run sqs:setup
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun run test:unit
+
+      - name: Integration tests (PostgreSQL + LocalStack)
+        run: bun run test:integration
+
+      - name: Concurrency tests (real processes, SIGTERM/SIGKILL)
+        run: bun run test:concurrency
+
+      - name: Smoke - bun run start serves and stops gracefully on SIGTERM
+        run: |
+          PORT=3999 bun src/main.ts > smoke.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 60); do
+            curl -fs http://127.0.0.1:3999/health/ready && break
+            sleep 0.5
+          done
+          echo
+          curl -fs http://127.0.0.1:3999/metrics | grep -c '^wagering_' || true
+          kill -TERM "$pid"
+          code=0
+          wait "$pid" || code=$?
+          cat smoke.log | tail -n 8
+          grep -q '"signal":"SIGTERM"' smoke.log
+          grep -q '"msg":"runtime stopped"' smoke.log
+          test "$code" = "0"
