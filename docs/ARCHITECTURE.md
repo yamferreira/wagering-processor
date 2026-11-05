@@ -328,7 +328,32 @@ Transações curtas (sem I/O externo dentro do lock, já que a publicação é v
 
 **Ordem global de locks:** wallet primeiro, depois linhas de `wager_transactions`. Nenhum fluxo
 trava duas wallets (a referência pertence à mesma wallet, garantido por FK composta), então não
-existe deadlock entre wallets.
+existe deadlock entre wallets. O wake-up de dependentes (§9.4) pode atualizar a linha de uma transação
+pendente de **outra** wallet (o dependente guarda só o external id da referência enquanto espera), mas
+só trava essa linha de `wager_transactions`, nunca uma segunda wallet. O worker que segura essa linha já
+tem o lock da wallet dela e não espera pela primeira, então não se forma ciclo. O claim do worker usa
+`SKIP LOCKED` e nunca espera.
+
+### 6.2 Suíte de concorrência in-process (T19, §8, §13)
+
+Paralelismo real no PostgreSQL (pools de 20 a 40 conexões, todas as operações disparadas de uma vez com
+`Promise.all`, sem mocks):
+
+| Teste | Resultado verificado |
+|---|---|
+| A mesma BET 50× por HTTP (+5 repetições) | 1 débito, exatamente um 201 e 49 respostas 200 com replay, o mesmo `transactionId` e o mesmo saldo |
+| A mesma BET 50× por SQS: 50 `messageId`s e 50 `MessageGroupId`s distintos, 2 consumidores | 1 débito, 1 transação |
+| O mesmo `messageId` 50× por grupos distintos | 1 débito, 1 linha de inbox |
+| §8 repetido 20×: saldo 100.00 e duas BETs de 80.00 | sempre 201 + 422 `INSUFFICIENT_FUNDS` (saldo observado 20.00), saldo final 20.00, 1 DEBIT; o retry das duas dá 200 + 422 com replay e nada muda |
+| Hot wallet: 220 operações mistas (BET/WIN/LOSS/REFUND/ROLLBACK e reversões disputadas) | saldo ≥ 0, sem PENDING_REFERENCE/FAILED no fim, 1 lançamento por transação que move saldo, no máximo 1 reversão por BET, saldo = recomputado a partir das transações = ledger |
+| 50 wallets × 20 operações (1000 de uma vez, intercaladas) | cada wallet exata (35.00, 21 lançamentos, version 21) |
+| Lock por linha (determinístico) | com X travada, Y faz commit em < 0,9s e X recebe `LOCK_TIMEOUT` |
+
+**Throughput por processo:** medido neste ambiente (Windows + Docker), uma submissão gasta cerca de 10ms
+de CPU no próprio processo Bun (fork do EntityManager, montagem das queries e hidratação no MikroORM) e
+cerca de 33ms de latência sequencial (cerca de 12 round-trips). Com 40 em paralelo, o processo fica
+limitado por CPU (CPU ≈ wall), enquanto o PostgreSQL fica ocioso. O gargalo é por processo e escala
+horizontalmente (§9, T20); não é contenção de lock.
 
 ## 7. Idempotência
 
@@ -651,7 +676,9 @@ _(dia 3)_
 
 ## 12. Trade-offs e limitações
 
-_(contínuo)_
+- **CPU do ORM no hot path:** cerca de 10ms de CPU por submissão no processo (§6.2). Escala-se com mais
+  instâncias. Se fosse preciso mais por processo, o caminho seria SQL nativo nas 10 a 12 instruções do
+  hot path, mantendo o MikroORM para o resto.
 
 ## Apêndice A — Interpretações da especificação (A1–A32)
 

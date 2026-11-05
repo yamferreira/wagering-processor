@@ -2,6 +2,7 @@ import type { RequestContext } from "../../src/application/use-cases/context";
 import { CreateWallet } from "../../src/application/use-cases/create-wallet";
 import { GetWagerTransaction, GetWallet, GetWalletLedger } from "../../src/application/use-cases/queries";
 import { ReconcileWallet, type ReconciliationReport } from "../../src/application/use-cases/reconcile-wallet";
+import { ResolvePendingReference } from "../../src/application/use-cases/resolve-pending-reference";
 import { type SubmitWagerCommand, SubmitWagerTransaction } from "../../src/application/use-cases/submit-wager-transaction";
 import { systemClock } from "../../src/application/ports/system";
 import { ReferenceRetryPolicy } from "../../src/domain/wager/reference-retry-policy";
@@ -19,6 +20,7 @@ export interface UseCaseHarness extends PersistenceHarness {
   getLedger: GetWalletLedger;
   getTransaction: GetWagerTransaction;
   reconcile: ReconcileWallet;
+  resolvePending: ResolvePendingReference;
 }
 
 export const CTX: RequestContext = { correlationId: "test-correlation", channel: "HTTP" };
@@ -32,6 +34,7 @@ export async function createUseCaseHarness(
   const divergences: ReconciliationReport[] = [];
   const supportedCurrencies = ["BRL", "USD", "EUR"];
   const deps = { runner: persistence.runner, ids: uuidV7Generator, clock: systemClock };
+  const retryPolicy = ReferenceRetryPolicy.of({ maxAttempts: 3, baseDelayMs: 50, maxDelayMs: 200 });
   return {
     ...persistence,
     faults,
@@ -41,8 +44,9 @@ export async function createUseCaseHarness(
       ...deps,
       faults,
       supportedCurrencies,
-      retryPolicy: ReferenceRetryPolicy.of({ maxAttempts: 3, baseDelayMs: 50, maxDelayMs: 200 }),
+      retryPolicy,
     }),
+    resolvePending: new ResolvePendingReference({ ...deps, retryPolicy, batchSize: 50, leaseMs: 5_000 }),
     getWallet: new GetWallet(persistence.runner),
     getLedger: new GetWalletLedger(persistence.runner),
     getTransaction: new GetWagerTransaction(persistence.runner),
