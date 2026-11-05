@@ -434,8 +434,14 @@ pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código
   (há teste). `limit` vai de 1 a 200, com default 50.
 - **Reconciliação (A19):** roda numa transação `REPEATABLE READ READ ONLY`, um snapshot consistente que
   não bloqueia a wallet. Confere três coisas: `Σ CREDIT − Σ DEBIT == balance`, `balance_after` da última
-  entrada `== balance` e versão da última entrada `== version`. Divergências vão para um
-  `ReconciliationObserver` (log + métrica na T23) e **nunca são corrigidas**.
+  entrada `== balance` e versão da última entrada `== version`. Divergências **nunca são corrigidas**.
+- **Divergência (T23, §9):** a resposta continua 200, com `consistent: false`, `difference` com sinal
+  (`stored − calculated`) e `details`. O `ReconciliationObserver` do container emite um log de **error**
+  (`reconciliation divergence…`, com `walletId`, `checkedEntries`, `ledgerSumMatches` e os booleanos de
+  `details`, sem valores) e incrementa `reconciliation_divergences_total`. Como o schema impede que a
+  aplicação crie uma divergência, o teste a provoca como superusuário, com o trigger
+  `wallet_check_ledger` desabilitado. A divergência é reportada a cada nova reconciliação até alguém
+  intervir (o saldo armazenado não muda).
 
 ## 8. API HTTP e mapeamento de status
 

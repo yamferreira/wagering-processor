@@ -153,7 +153,23 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
     getWallet: new GetWallet(runner),
     getLedger: new GetWalletLedger(runner),
     getTransaction: new GetWagerTransaction(runner),
-    reconcile: new ReconcileWallet(runner, overrides.reconciliationObserver),
+    // §9: divergences are never corrected silently — logged (identifiers only), counted and returned.
+    reconcile: new ReconcileWallet(runner, {
+      onDivergence: (report) => {
+        logger.error(
+          {
+            component: "reconciliation",
+            walletId: report.walletId,
+            checkedEntries: report.checkedEntries,
+            ledgerSumMatches: report.storedBalance.equals(report.calculatedBalance),
+            ...report.details,
+          },
+          "reconciliation divergence: stored balance does not match the ledger",
+        );
+        metrics.reconciliationDivergence();
+        overrides.reconciliationObserver?.onDivergence(report);
+      },
+    }),
     readiness: readinessChecks({ orm, input: sqs.input }),
     async close() {
       sqs.client.destroy();
