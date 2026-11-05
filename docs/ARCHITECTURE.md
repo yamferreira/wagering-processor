@@ -183,6 +183,29 @@ segundos ou minutos. Esperar 18 min cobre filas atrasadas e retries do provedor 
 transações pendentes indefinidamente. Além disso, o wake-up (T16) resolve na hora quando a
 referência chega.
 
+### 4.6 Eventos de integração, Outbox e Inbox (T07, §6.5, §11)
+
+- **Envelope:** a classe abstrata `IntegrationEvent<T>` tem uma subclasse por evento, e
+  `eventType`/`version` são campos da subclasse (mais `static TYPE` para os consumidores). `data`
+  passa por um round-trip JSON e fica congelado: o payload é JSON estável, só com `MoneyProps` (string).
+- **Eventos:**
+
+  | Evento | `aggregateId` | Quando |
+  |---|---|---|
+  | `WagerTransactionProcessed` | transactionId | qualquer transação aplicada, inclusive LOSS e OPENING |
+  | `WagerTransactionRejected` | transactionId | rejeição de negócio (inclui `REFERENCE_NOT_FOUND` por esgotamento) |
+  | `WalletBalanceChanged` | walletId | um por lançamento no ledger, ou seja, só quando o saldo muda |
+  | `WagerTransactionPendingReference` | transactionId | referência ausente (primeira marcação) |
+
+  Todos carregam `walletId` em `data`, que é a chave de agrupamento na fila de eventos (A24).
+- **Outbox:** `OutboxMessage.enqueue(event)` usa `id = eventId`, a chave de deduplicação dos
+  consumidores. Mensagem nova nasce devida (`nextAttemptAt = occurredAt`). `scheduleRetry` aplica
+  backoff exponencial de 1s até o cap de 60s, com até 20% de jitter injetável, **sem limite de
+  tentativas**, para que um evento confirmado nunca se perca (A29); o alarme vem de `outbox_lag_seconds`.
+  `markPublished` é idempotente: uma publicação duplicada mantém o primeiro timestamp.
+- **Inbox:** `InboxMessage.receive` guarda `payloadHash` para detectar o mesmo `messageId` com
+  conteúdo diferente (permanente → DLQ, A27). `markProcessed` só pode ser chamado uma vez.
+
 ## 5. Persistência e schema
 
 _(T09/T10)_
