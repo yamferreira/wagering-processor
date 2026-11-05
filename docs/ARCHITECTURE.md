@@ -396,7 +396,50 @@ pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código
 
 ## 8. API HTTP e mapeamento de status
 
-_(T12)_
+### 8.1 Estrutura (T12)
+
+- O Nest só existe em `src/infrastructure/http`. Os controllers são adaptadores finos: validam o
+  contrato com **zod estrito** (campo desconhecido → 400), chamam o use case do container e apresentam o resultado.
+- **Composition root** (`infrastructure/app/container.ts`): monta ORM, `TransactionRunner`, use cases,
+  porta de identidade e checks de readiness. O `AppModule.register(container)` recebe tudo pronto, sem
+  injeção mágica de repositórios.
+- **Body parser próprio** (`express.json`, limite de 64 kB). Assim JSON malformado também sai no formato
+  padrão de erro (`MALFORMED_JSON`).
+- **Correlation id:** `X-Correlation-Id` é aceito quando bem formado (ou gerado) e devolvido na resposta.
+  Vira `correlationId` dos eventos. Na submissão, a `Idempotency-Key` é o `causationId`.
+
+### 8.2 Mapa de status (consistente em todos os endpoints)
+
+| Status | Quando | `error.code` (quando erro) | O provedor deve… |
+|---|---|---|---|
+| 201 | transação nova PROCESSED / wallet criada | — | — |
+| 200 | replay de PROCESSED (`idempotentReplay: true`) / consultas | — | — |
+| 202 | PENDING_REFERENCE (nova ou replay) | — | aguardar (consultar depois) |
+| 400 | payload/header/query inválido | `VALIDATION_ERROR`, `INVALID_MONEY`, `INVALID_CURRENCY`, `MALFORMED_JSON` | corrigir |
+| 401 / 403 | (só com IdP real) credencial ausente / provider não autorizado | `UNAUTHENTICATED`, `PROVIDER_FORBIDDEN` | autenticar |
+| 404 | wallet/transação/rota inexistente | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `ROUTE_NOT_FOUND` | corrigir |
+| 409 | conflito de idempotência / wallet duplicada | `IDEMPOTENCY_KEY_REUSED`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS` | não reenviar igual |
+| 422 | rejeição de regra de negócio (nova ou replay) | o próprio `failureCode` (+ `providerAction`) | ver §4.2 |
+| 500 | erro interno permanente; transação FAILED (nova ou replay) | `INTERNAL_ERROR` | contatar o operador |
+| 503 | falha transitória (lock_timeout, banco/fila indisponível) + `Retry-After` | `TRANSIENT_INFRASTRUCTURE_ERROR` (+ `reason`) | reenviar com a mesma key |
+
+**Replay mantém o status original (A11):** 200 (PROCESSED), 202, 422 ou 500, sempre com o mesmo
+corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
+
+**Formato único de erro:** `{ "error": { "code", "message", ...detalhes } }`. Na 422 os detalhes são
+`providerAction`, `transactionId`, `status`, `balance` (saldo observado) e `idempotentReplay`.
+
+### 8.3 Contratos
+
+- `POST /wallets` → `{ id, playerId, balance, version }`.
+- `GET /wallets/:walletId/ledger?cursor&limit` → `{ walletId, items: [{ id, transactionId, direction,
+  money, balanceBefore, balanceAfter, walletVersion, createdAt }], nextCursor }` (`nextCursor: null` na última página).
+- `POST /wagering/transactions` → `{ transactionId, status, balance, idempotentReplay }`, com `balance: null` em PENDING_REFERENCE.
+- `GET /wagering/transactions/:id` e `GET /providers/:providerId/wagering/transactions/:externalTransactionId`
+  → visão completa da transação (inclui `failureCode`, referências, `balance` observado, datas).
+- `POST /wallets/:walletId/reconciliation` → formato da §9 + `details`.
+- Identificadores (A22): `walletId` é UUID; os demais têm de 1 a 128 caracteres ASCII imprimíveis sem
+  espaço. A `Idempotency-Key` tem de 1 a 255 caracteres.
 
 ## 9. Mensageria: inbox, outbox, PENDING_REFERENCE
 
@@ -404,7 +447,33 @@ _(dia 2)_
 
 ## 10. Autenticação
 
-_(T12)_
+**Decisão:** não implementar. Autenticação não vale pontos (§2, §14) e não deve competir com
+correção financeira. O ponto de extensão, porém, está **ligado e testado**:
+
+- `ProviderIdentityPort.resolve(credentials) → ProviderIdentity { subject, providerIds }` (porta de aplicação).
+- `AuthGuard` global (Nest) resolve a identidade e a anexa à requisição. `@Public()` libera
+  `/health/*` (e `/metrics` no dia 3).
+- Os controllers chamam `assertCanActAs(identity, providerId)`, de modo que o `providerId` do body (e o do path
+  na consulta por id externo) precisa ser um dos que o chamador representa.
+- O adapter atual é `NoopProviderIdentity` (todo chamador pode agir como qualquer provider). Um teste
+  com um adapter restritivo prova a fiação: health continua aberto, chamada sem credencial → 401,
+  provider não autorizado → 403.
+
+**Desenho com Keycloak:**
+
+1. Um *realm* `wagering` com um *client* confidencial por provedor (`provider-a`, …), usando o fluxo
+   **OAuth2 client-credentials**. O provedor obtém o access token em
+   `/realms/wagering/protocol/openid-connect/token` com `client_id`/`client_secret` (ou `private_key_jwt`).
+2. Um *protocol mapper* coloca no token a claim `provider_id` (ou `azp` = client id), e a audiência
+   `wagering-api` restringe o uso do token.
+3. O adapter `OidcProviderIdentity` valida a assinatura via JWKS (`/protocol/openid-connect/certs`,
+   com cache e rotação), `iss`, `aud`, `exp`/`nbf`, e devolve `{ subject: sub, providerIds: [provider_id] }`.
+4. Token inválido ou ausente → 401. `providerId` do body diferente do token → 403. O token não entra no
+   `payloadHash` (é transporte).
+5. Na SQS, a fila é canal interno confiável (§2). A identidade do provedor na mensagem continua sujeita
+   às validações de domínio (provider reservado, referência do mesmo provider etc.).
+6. No Docker Compose: um serviço `keycloak` com o realm importado por arquivo JSON. Testes de
+   integração obteriam tokens reais via client-credentials.
 
 ## 11. Observabilidade
 
