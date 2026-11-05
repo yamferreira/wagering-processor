@@ -4,6 +4,7 @@ import { ConcurrencyConflictError } from "../../../application/errors";
 import type {
   InboxRepository,
   OutboxLag,
+  PendingReferenceClaim,
   LedgerPage,
   LedgerRepository,
   LedgerSummary,
@@ -131,6 +132,46 @@ class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
 
   async findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | null> {
     return this.findOne({ providerId, externalTransactionId });
+  }
+
+  async lockById(id: string): Promise<WagerTransaction | null> {
+    const record = await this.em.findOne(
+      WagerTransactionRecord,
+      { id },
+      { lockMode: LockMode.PESSIMISTIC_WRITE, disableIdentityMap: true },
+    );
+    return record ? WagerTransactionMapper.toDomain(record) : null;
+  }
+
+  async leaseDuePendingReferences(now: Date, leaseUntil: Date, limit: number): Promise<PendingReferenceClaim[]> {
+    // Served by wager_tx_pending_reference_due_idx (partial on status = PENDING_REFERENCE).
+    const rows = await this.em.execute<{ id: string; wallet_id: string }[]>(
+      `UPDATE wager_transactions t
+          SET next_reference_attempt_at = ?, updated_at = ?
+         FROM (SELECT id FROM wager_transactions
+                WHERE status = 'PENDING_REFERENCE' AND next_reference_attempt_at <= ?
+                ORDER BY next_reference_attempt_at, id
+                LIMIT ?
+                FOR UPDATE SKIP LOCKED) due
+        WHERE t.id = due.id
+        RETURNING t.id, t.wallet_id`,
+      [leaseUntil, now, now, limit],
+    );
+    return rows.map((row) => ({ id: row.id, walletId: row.wallet_id }));
+  }
+
+  async wakeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number> {
+    // Served by wager_tx_pending_by_reference_idx.
+    return this.em.nativeUpdate(
+      WagerTransactionRecord,
+      {
+        status: "PENDING_REFERENCE" as WagerTransactionStatus,
+        providerId,
+        referenceExternalTransactionId: externalTransactionId,
+        nextReferenceAttemptAt: { $gt: now },
+      },
+      { nextReferenceAttemptAt: now, updatedAt: now },
+    );
   }
 
   async isReversed(transactionId: string): Promise<boolean> {

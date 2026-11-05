@@ -15,6 +15,7 @@ export interface Runtime {
   port?: number;
   consumer?: WagerTransactionConsumer;
   publisher?: PollingWorker;
+  pendingWorker?: PollingWorker;
   /** Graceful shutdown in reverse start order. Idempotent. */
   stop(): Promise<void>;
 }
@@ -66,6 +67,19 @@ export async function startRuntime(config: AppConfig, overrides: ContainerOverri
       );
       runtime.publisher.start();
     }
+    if (roles.includes("pending-worker")) {
+      const workerLog = log.child({ component: "pending-reference-worker" });
+      runtime.pendingWorker = new PollingWorker(
+        async () => {
+          const result = await container.resolvePending.runRound();
+          if (result.claimed > 0) workerLog.info({ claimed: result.claimed, ...result.resolutions }, "pending references resolved");
+          return { moreWork: result.claimed === config.PENDING_REF_BATCH_SIZE };
+        },
+        { name: "pending-reference-worker", idleDelayMs: config.PENDING_REF_POLL_MS },
+        workerLog,
+      );
+      runtime.pendingWorker.start();
+    }
     if (roles.includes("api")) {
       runtime.http = await createHttpApp(container, {
         onUnexpectedError: (error) => log.error({ err: describe(error) }, "unexpected error"),
@@ -93,6 +107,7 @@ async function shutdown(runtime: Runtime): Promise<void> {
   await Promise.all([
     runtime.consumer?.stop().catch((error) => log.error({ err: describe(error) }, "consumer stop failed")),
     runtime.publisher?.stop().catch((error) => log.error({ err: describe(error) }, "publisher stop failed")),
+    runtime.pendingWorker?.stop().catch((error) => log.error({ err: describe(error) }, "pending worker stop failed")),
   ]);
   await runtime.container.close();
   log.info({}, "runtime stopped");

@@ -9,6 +9,7 @@ import type { TransactionRunner } from "../../application/ports/transaction-runn
 import { CreateWallet } from "../../application/use-cases/create-wallet";
 import { HandleWagerMessage } from "../../application/use-cases/handle-wager-message";
 import { PublishOutboxBatch } from "../../application/use-cases/publish-outbox-batch";
+import { ResolvePendingReference } from "../../application/use-cases/resolve-pending-reference";
 import { GetWagerTransaction, GetWallet, GetWalletLedger } from "../../application/use-cases/queries";
 import { ReconcileWallet, type ReconciliationObserver } from "../../application/use-cases/reconcile-wallet";
 import { SubmitWagerTransaction } from "../../application/use-cases/submit-wager-transaction";
@@ -47,6 +48,7 @@ export interface Container {
   sqs: MessagingQueues;
   handleWagerMessage: HandleWagerMessage;
   publishOutbox: PublishOutboxBatch;
+  resolvePending: ResolvePendingReference;
   runner: TransactionRunner;
   ids: IdGenerator;
   clock: Clock;
@@ -108,6 +110,14 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
     createWallet: new CreateWallet({ runner, ids, clock, supportedCurrencies }),
     submit,
     handleWagerMessage: new HandleWagerMessage({ consumerName: WAGER_CONSUMER_NAME, submit, runner, clock, faults }),
+    resolvePending: new ResolvePendingReference({
+      runner,
+      ids,
+      clock,
+      retryPolicy,
+      batchSize: config.PENDING_REF_BATCH_SIZE,
+      leaseMs: config.PENDING_REF_LEASE_MS,
+    }),
     publishOutbox: new PublishOutboxBatch({ runner, publisher: eventPublisher, clock, faults, batchSize: config.OUTBOX_BATCH_SIZE }),
     getWallet: new GetWallet(runner),
     getLedger: new GetWalletLedger(runner),

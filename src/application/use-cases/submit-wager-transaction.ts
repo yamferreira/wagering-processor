@@ -1,7 +1,7 @@
 import { ValidationError } from "../../domain/errors";
 import { Money, type MoneyProps } from "../../domain/money/money";
 import { applyDecision } from "../../domain/wager/apply-decision";
-import { decide, type ReferenceLookup } from "../../domain/wager/decide";
+import { decide } from "../../domain/wager/decide";
 import { FailureCode } from "../../domain/wager/failure-code";
 import { evaluateIdempotency, IdempotencyConflictError } from "../../domain/wager/idempotency";
 import { EXTERNAL_KINDS, type WagerTransactionKind, WagerTransactionStatus as Status } from "../../domain/wager/kinds";
@@ -16,6 +16,7 @@ import type { TransactionRunner } from "../ports/transaction-runner";
 import { eventContextFactory, type RequestContext } from "./context";
 import { assertSupportedCurrency } from "./create-wallet";
 import { outcomeEvents } from "./outcome-events";
+import { resolveReference, wakeDependentsOf } from "./references";
 
 export interface SubmitWagerCommand {
   idempotencyKey: string;
@@ -125,6 +126,7 @@ export class SubmitWagerTransaction {
         }
         await faults.checkpoint("submit:before-outbox-insert");
         await repos.outbox.insert(outcomeEvents(tx, wallet, ledgerEntry, nextEventContext));
+        await wakeDependentsOf(repos, tx, clock.now());
         return { type: "NEW", transaction: tx };
       });
     } catch (error) {
@@ -216,11 +218,6 @@ function resolveExisting(
   return { transaction: verdict.transaction, replay: true };
 }
 
-async function resolveReference(repos: Repositories, tx: WagerTransaction): Promise<ReferenceLookup> {
-  const reference = await repos.transactions.findByExternalId(tx.providerId, tx.referenceExternalTransactionId!);
-  if (!reference) return { found: false };
-  return { found: true, reference, alreadyReversed: await repos.transactions.isReversed(reference.id) };
-}
 
 /** Errors that are neither expected business/application outcomes nor transient: permanent (A16). */
 function isUnexpected(error: unknown): boolean {

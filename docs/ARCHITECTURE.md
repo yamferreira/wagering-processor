@@ -557,6 +557,38 @@ COMMIT
   a uma projeção na mesma transação que a sua linha de inbox (`events-audit`, `messageId = eventId`). Com
   cada evento entregue 3 vezes, a projeção conta cada um exatamente uma vez.
 
+### 9.4 Worker de PENDING_REFERENCE (T16, §7.1, A7, A28)
+
+Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nunca aninhados:
+
+1. **Claim + lease:** `UPDATE … SET next_reference_attempt_at = now + PENDING_REF_LEASE_MS FROM (SELECT id …
+   WHERE status = PENDING_REFERENCE AND next_reference_attempt_at <= now … FOR UPDATE SKIP LOCKED LIMIT n)`
+   (`wager_tx_pending_reference_due_idx`). Só toca linhas de transação e nunca espera, então não entra em
+   deadlock com submissões. O lease não conta como tentativa: se o worker morrer depois do claim, o item
+   volta a ficar devido quando o lease expira (testado).
+2. **Por item:** lock da **wallet** primeiro e depois da linha da transação (`FOR UPDATE`), a mesma ordem
+   wallet → transação de todos os fluxos. Rechecagem do status (outro worker ou um wake-up pode ter
+   resolvido o item: `SKIPPED`), `resolveReference` e o **mesmo** `decide()`/`applyDecision()` puro da
+   submissão. O UPDATE usa `WHERE status = PENDING_REFERENCE` como guarda adicional.
+
+- **Resultados:** PROCESSED (saldo + ledger + `WagerTransactionProcessed`/`WalletBalanceChanged`); REJECTED
+  (regra de negócio, ou `REFERENCE_NOT_FOUND` ao esgotar `PENDING_REF_MAX_ATTEMPTS`, com
+  `WagerTransactionRejected`); ou reagendado com `min(base·2ⁿ, cap)`, **sem** novo evento
+  (`WagerTransactionPendingReference` saiu quando a transação ficou pendente).
+- **Wake-up (A28):** toda transação que fica terminal, na submissão ou no worker, executa na mesma
+  transação SQL `UPDATE … SET next_reference_attempt_at = now WHERE status = PENDING_REFERENCE AND
+  provider_id = ? AND reference_external_transaction_id = ?` (`wager_tx_pending_by_reference_idx`). O
+  dependente é resolvido na próxima rodada do worker (`PENDING_REF_POLL_MS`), em vez de esperar o backoff.
+  Isso vale em cascata: um ROLLBACK de um WIN que esperava a BET resolve assim que a BET chega.
+- **Wake-up × lease:** um wake-up pode adiantar um item que está com lease. É seguro: o processamento
+  por item recheca o status sob o lock da wallet, e no máximo um worker aplica o efeito.
+- **REFUND e ROLLBACK pendentes sobre a mesma BET:** são resolvidos em sequência sob o lock da wallet. O
+  primeiro é aplicado e o segundo vê a reversão (`REFERENCE_ALREADY_REVERSED`), coberto também pelo
+  índice único parcial.
+- **Testes:** dependente chegando antes da referência por HTTP e por SQS, a cascata, o esgotamento, dois
+  workers concorrentes sobre 40 pendências (20 PROCESSED e 20 REJECTED, exatamente um evento terminal por
+  transação) e a expiração do lease.
+
 ## 10. Autenticação
 
 **Decisão:** não implementar. Autenticação não vale pontos (§2, §14) e não deve competir com

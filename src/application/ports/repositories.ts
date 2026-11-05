@@ -44,6 +44,25 @@ export interface WagerTransactionRepository {
   findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | null>;
   /** True when a PROCESSED REFUND/ROLLBACK references `transactionId`. */
   isReversed(transactionId: string): Promise<boolean>;
+  /** `SELECT … FOR UPDATE` of one transaction row. Lock order is always wallet → transaction. */
+  lockById(id: string): Promise<WagerTransaction | null>;
+  /**
+   * Claims due PENDING_REFERENCE rows (`FOR UPDATE SKIP LOCKED`) and leases them by pushing
+   * next_reference_attempt_at to `leaseUntil`, so no other worker picks them while they are
+   * processed; if this worker dies, they become due again when the lease expires. Does not count
+   * as an attempt.
+   */
+  leaseDuePendingReferences(now: Date, leaseUntil: Date, limit: number): Promise<PendingReferenceClaim[]>;
+  /**
+   * A28 wake-up: makes PENDING_REFERENCE transactions waiting for (providerId, externalTransactionId)
+   * due now. Called in the same SQL transaction that made the reference terminal.
+   */
+  wakeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number>;
+}
+
+export interface PendingReferenceClaim {
+  id: string;
+  walletId: string;
 }
 
 export interface OutboxLag {
