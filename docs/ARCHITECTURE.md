@@ -261,6 +261,14 @@ em `number`, e tem um teste negativo que prova que detecta divergências.
 - **Mensageria em teste:** `createMessagingHarness` cria um banco novo, filas reais no LocalStack com
   prefixo único e runtimes in-process com os papéis pedidos; `spawnInstance` sobe processos reais de
   `src/main.ts` (prontidão via IPC, nenhum órfão: todos são mortos no teardown e no exit do runner).
+- **Harness de processos (T18):** `spawnCluster(h, n)` sobe N instâncias reais (`bun src/main.ts`, todos os
+  papéis por padrão, porta 0 informada pelo filho via IPC) sobre o mesmo banco e as mesmas filas.
+  `stop()` é gracioso (SIGTERM em POSIX, IPC no Windows) e `kill()` é crash (SIGKILL/TerminateProcess).
+  Todo filho é registrado e morto no `afterEach`/`afterAll` e no `exit` do runner; o teste do harness
+  confere por PID que nenhum processo sobrevive. `fireHttp` dispara todas as requisições de uma vez
+  (round-robin entre instâncias), `fireSqs` envia em lotes de 10 em paralelo (com `MessageGroupId`
+  aleatório quando se quer anular a ordenação do broker) e `waitForQuiescence` espera fila vazia, outbox
+  100% publicada e nenhuma PENDING_REFERENCE vencida, estável por 3 leituras seguidas.
 
 ### 5.4 Mapeamento MikroORM (T10)
 
