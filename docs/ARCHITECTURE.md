@@ -1,23 +1,60 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> Documento vivo: cada tarefa de implementação (T01…T27) registra aqui as decisões que tomou.
-> As interpretações da especificação (`A1…A32`) estão no [Apêndice A](#apêndice-a--interpretações-da-especificação-a1a32).
+> Decisões, garantias, trade-offs e limitações da solução. Cada seção indica a tarefa (T01…T28) que a
+> implementou e a seção do enunciado (`§n`) que atende. As interpretações da especificação (`A1…A32`)
+> estão no [Apêndice A](#apêndice-a--interpretações-da-especificação-a1a32). Setup e comandos: `README.md`.
 
 ## 1. Visão geral
 
-Serviço financeiro que processa transações de apostas (BET, WIN, LOSS, REFUND, ROLLBACK)
-recebidas por HTTP e por SQS, com saldo materializado por wallet, ledger append-only,
-idempotência persistente, Transactional Outbox e Inbox.
+Serviço financeiro que processa transações de apostas (BET, WIN, LOSS, REFUND, ROLLBACK) recebidas por
+HTTP e por SQS, com saldo materializado por wallet, ledger append-only, idempotência persistente,
+Transactional Outbox e Inbox, correto com várias instâncias concorrentes.
+
+```
+ provedor ──HTTP──▶ [api] ─┐                                       ┌─▶ [publisher] ──▶ wagering-events.fifo
+                           ├─▶ SubmitWagerTransaction ─▶ PostgreSQL ┤      (FOR UPDATE SKIP LOCKED, backoff)
+ provedor ──SQS───▶ [consumer] (inbox na mesma tx) ┘   │  1 transação: │
+   wager-transactions.fifo  ──(falha permanente)──▶ DLQ │  wallet FOR UPDATE + wager + ledger
+                                                        │  + saldo + outbox (+ inbox)
+                       [pending-worker] ◀───────────────┘  PENDING_REFERENCE (SKIP LOCKED + lease,
+                                                            backoff, wake-up quando a referência chega)
+```
+
+O PostgreSQL é a fonte de verdade de tudo que precisa ser correto: unicidade, imutabilidade, saldo ≥ 0,
+saldo ⇔ ledger, reversão única e serialização por wallet. SQS FIFO, a ordem de chegada e a memória dos
+processos nunca são usadas como garantia.
+
+### 1.1 Onde está cada justificativa pedida pelo enunciado
+
+| O enunciado pede | Onde |
+|---|---|
+| Escolha do ORM, mapeamento do Money e estratégia transacional (§4) | §2, §4.1, §5.4, §6.1 |
+| Estratégia de concorrência justificada; `version` × alternativa (§6.2, §8) | §6.1, §6.2, §9.5 |
+| Transições válidas da máquina de estados (§6.3) | §4.4 |
+| Interpretações adicionais das regras (§7) | §4.5 e Apêndice A |
+| Limite de tentativas / TTL de PENDING_REFERENCE justificado (§7.1) | §4.5 (política), §9.4, A28 |
+| Taxonomia de `failureCode` com a ação do provedor (§7.2) | §4.2 |
+| Algoritmo do `payloadHash` (§9) | §7.1 |
+| Mapa de status HTTP consistente (§9) | §8.2 |
+| Reconciliação e divergências (§9) | §7.4 |
+| Health checks (§9) | §8.4 |
+| SQS: inbox, ack após commit, classificação de erros, DLQ, SIGTERM (§10) | §9.1, §9.2 |
+| Transactional Outbox com publishers concorrentes (§11) | §9.3, §9.5 |
+| Observabilidade (§12) | §11 |
+| Garantias no schema (§5) | §5.2 |
+| Autenticação não implementada + desenho (§2) | §10 |
+| Trade-offs e limitações (§14) | §12 |
+| Teste de carga (§14, diferencial) | `docs/LOAD-TEST.md` |
 
 ## 2. Stack e versões
 
 | Item | Escolha | Observação |
 |---|---|---|
-| Runtime / PM / testes | Bun 1.3 | `bun test` como runner |
-| Linguagem | TypeScript 7 (strict) | só para typecheck (`tsc --noEmit`); o Bun transpila em runtime |
-| Framework | NestJS 12 (platform-express) | só em `src/infrastructure/http` |
-| ORM | MikroORM 7 (driver PostgreSQL) | `EntitySchema`, sem decorators no domínio |
-| Banco | PostgreSQL 16 | |
+| Runtime / PM / testes | Bun **1.3.14** (fixado em `packageManager`/`engines` e no CI) | `bun test` como runner |
+| Linguagem | TypeScript 7.0.2 (strict) | só para typecheck (`tsc --noEmit`); o Bun transpila em runtime |
+| Framework | NestJS 12.3.3 (platform-express) | só em `src/infrastructure/http` |
+| ORM | MikroORM 7.2.7 (driver PostgreSQL) | `EntitySchema`, sem decorators no domínio |
+| Banco | PostgreSQL **16.15** (`postgres:16.15-alpine`) | `max_connections=300` |
 | Mensageria | AWS SQS via LocalStack **4.14.0** | ver 2.1 |
 | Validação de contrato | zod 4 | schemas estritos nos DTOs HTTP e no envelope SQS |
 | Logs / métricas | pino / prom-client | |
@@ -322,6 +359,13 @@ imprevisível. Com `FOR UPDATE`, as requisições da mesma wallet fazem fila no 
 cada uma lê o saldo já commitado pela anterior e decide uma vez. Não há read → calculate →
 update sem lock.
 
+**Estratégia transacional:** uma transação SQL curta por operação, em **READ COMMITTED**, com o lock
+explícito da linha da wallet. Não usamos SERIALIZABLE: ele também evitaria lost updates, mas abortando
+transações (40001) sob contenção, o que dá a mesma tempestade de retries do otimista numa hot wallet. Com
+o `FOR UPDATE`, cada leitura relevante (saldo, idempotência, referência e reversão) é feita **depois** de
+obter o lock, então em READ COMMITTED ela já vê o último commit da wallet. A reconciliação é a única
+leitura multi-statement que precisa de snapshot e usa `REPEATABLE READ READ ONLY` (sem lock).
+
 **Sem lock global:** o lock é só da linha da wallet. Wallets diferentes rodam em paralelo,
 provado por teste determinístico: com a wallet X travada, a Y faz commit e a X expira por `lock_timeout`.
 
@@ -478,6 +522,18 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 **Formato único de erro:** `{ "error": { "code", "message", ...detalhes } }`. Na 422 os detalhes são
 `providerAction`, `transactionId`, `status`, `balance` (saldo observado) e `idempotentReplay`.
 
+### 8.3 Contratos
+
+- `POST /wallets` → `{ id, playerId, balance, version }`.
+- `GET /wallets/:walletId/ledger?cursor&limit` → `{ walletId, items: [{ id, transactionId, direction,
+  money, balanceBefore, balanceAfter, walletVersion, createdAt }], nextCursor }` (`nextCursor: null` na última página).
+- `POST /wagering/transactions` → `{ transactionId, status, balance, idempotentReplay }`, com `balance: null` em PENDING_REFERENCE.
+- `GET /wagering/transactions/:id` e `GET /providers/:providerId/wagering/transactions/:externalTransactionId`
+  → visão completa da transação (inclui `failureCode`, referências, `balance` observado, datas).
+- `POST /wallets/:walletId/reconciliation` → formato da §9 + `details`.
+- Identificadores (A22): `walletId` é UUID; os demais têm de 1 a 128 caracteres ASCII imprimíveis sem
+  espaço. A `Idempotency-Key` tem de 1 a 255 caracteres.
+
 ### 8.4 Health e falhas transitórias (T17, §3, §9)
 
 - `GET /health/live`: sempre 200 enquanto o processo responde, sem checar dependências (uma queda do
@@ -495,18 +551,6 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
   provedor reenvia com a mesma key. Validação de payload continua respondendo 400 sem tocar no banco.
 - **SQS fora do ar não afeta a HTTP:** a submissão grava o evento na outbox, e o publisher só o envia
   quando a fila voltar (§9.3).
-
-### 8.3 Contratos
-
-- `POST /wallets` → `{ id, playerId, balance, version }`.
-- `GET /wallets/:walletId/ledger?cursor&limit` → `{ walletId, items: [{ id, transactionId, direction,
-  money, balanceBefore, balanceAfter, walletVersion, createdAt }], nextCursor }` (`nextCursor: null` na última página).
-- `POST /wagering/transactions` → `{ transactionId, status, balance, idempotentReplay }`, com `balance: null` em PENDING_REFERENCE.
-- `GET /wagering/transactions/:id` e `GET /providers/:providerId/wagering/transactions/:externalTransactionId`
-  → visão completa da transação (inclui `failureCode`, referências, `balance` observado, datas).
-- `POST /wallets/:walletId/reconciliation` → formato da §9 + `details`.
-- Identificadores (A22): `walletId` é UUID; os demais têm de 1 a 128 caracteres ASCII imprimíveis sem
-  espaço. A `Idempotency-Key` tem de 1 a 255 caracteres.
 
 ## 9. Mensageria: inbox, outbox, PENDING_REFERENCE
 
@@ -784,6 +828,34 @@ andamento. O primeiro run em Linux passou sem nenhuma correção específica de 
 
 ## 12. Trade-offs e limitações
 
+**Trade-offs escolhidos conscientemente**
+
+- **Lock pessimista por wallet** (§6.1): latência estável em hot wallets em troca de throughput serializado
+  por wallet. Uma wallet processa uma operação por vez; wallets diferentes escalam em paralelo.
+- **Lock da outbox segurado durante o envio ao broker** (§9.3): nenhum publisher pega a mesma linha, em troca
+  de transações que duram o envio (com timeout de 5s e `idle_in_transaction_session_timeout`).
+- **At-least-once em toda a mensageria:** a outbox pode republicar e o consumidor pode receber de novo.
+  A deduplicação é sempre por `eventId`/`messageId` no banco, nunca por "exactly-once" do broker.
+- **Checagens redundantes** (código + constraint + trigger): mais escrita por transação (trigger deferred
+  saldo ⇔ ledger), em troca de garantias que valem mesmo para um bug ou uma escrita manual.
+- **REFUND/ROLLBACK de BET com WIN é permitido** (A6): segue a spec literalmente. O provedor deve reverter
+  o WIN antes. É um risco de negócio documentado, não uma regra inventada.
+
+**Limitações conhecidas**
+
+- **Moedas só com escala 2** (A3): JPY (0 casas) e KWD (3 casas) ficam fora de escopo.
+- **Outbox e inbox sem retenção/limpeza** (A29): as tabelas crescem. Em produção: job de expurgo das linhas
+  publicadas/processadas há mais de N dias, ou particionamento por data.
+- **DLQ sem redrive automatizado:** o reprocessamento é manual (`StartMessageMoveTask` ou reenvio). É seguro
+  graças à inbox e à idempotência.
+- **Reconciliação sob demanda:** não há um job periódico; a métrica e o log disparam quando alguém chama o
+  endpoint. Em produção: um agendamento varrendo as wallets ativas.
+- **Throughput FIFO:** filas FIFO da AWS têm cota de throughput por fila (maior em lote e no modo
+  *high throughput*, que distribui por `MessageGroupId`). Não foi medido aqui: o LocalStack não impõe essas
+  cotas. Com `MessageGroupId = walletId` (A26), a ordenação do broker coincide com a serialização por
+  wallet, e a correção não depende dela.
+- **Sem autenticação** (§10): só o ponto de extensão (`ProviderIdentityPort` + `AuthGuard` no-op).
+- **Um único PostgreSQL:** sem sharding nem réplicas de leitura. As consultas leem do primário.
 - **CPU do ORM no hot path:** cerca de 10ms de CPU por submissão no processo (§6.2). Escala-se com mais
   instâncias. Se fosse preciso mais por processo, o caminho seria SQL nativo nas 10 a 12 instruções do
   hot path, mantendo o MikroORM para o resto.
