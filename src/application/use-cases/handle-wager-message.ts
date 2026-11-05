@@ -1,6 +1,7 @@
 import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { ApplicationError, NotFoundError, UniqueViolationError } from "../errors";
 import type { FaultInjector } from "../ports/fault-injector";
+import { type Metrics, noMetrics } from "../ports/metrics";
 import type { Clock } from "../ports/system";
 import type { TransactionRunner } from "../ports/transaction-runner";
 import type { RequestContext } from "./context";
@@ -40,6 +41,7 @@ export interface HandleWagerMessageDeps {
   runner: TransactionRunner;
   clock: Clock;
   faults: FaultInjector;
+  metrics?: Metrics;
 }
 
 /**
@@ -91,6 +93,7 @@ export class HandleWagerMessage {
 
   private duplicate(known: InboxMessage, message: WagerMessage): MessageOutcome {
     if (!known.matchesPayload(message.payloadHash)) throw new MessageIdConflictError(message.messageId);
+    (this.deps.metrics ?? noMetrics).inboxDuplicate(this.deps.consumerName);
     return { type: "DUPLICATE_MESSAGE" };
   }
 

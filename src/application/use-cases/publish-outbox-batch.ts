@@ -1,5 +1,6 @@
 import type { EventPublisher } from "../ports/event-publisher";
 import type { FaultInjector } from "../ports/fault-injector";
+import { type Metrics, noMetrics } from "../ports/metrics";
 import type { Clock } from "../ports/system";
 import type { TransactionRunner } from "../ports/transaction-runner";
 
@@ -15,6 +16,7 @@ export interface PublishOutboxBatchDeps {
   clock: Clock;
   faults: FaultInjector;
   batchSize: number;
+  metrics?: Metrics;
 }
 
 /**
@@ -38,7 +40,8 @@ export class PublishOutboxBatch {
 
   async execute(): Promise<PublishBatchResult> {
     const { runner, publisher, clock, faults, batchSize } = this.deps;
-    return runner.run(async (repos) => {
+    const metrics = this.deps.metrics ?? noMetrics;
+    const result = await runner.run(async (repos): Promise<PublishBatchResult> => {
       const batch = await repos.outbox.claimDue(clock.now(), batchSize);
       if (batch.length === 0) return { claimed: 0, published: 0, failed: 0 };
       await faults.checkpoint("outbox:after-claim-before-publish");
@@ -62,5 +65,9 @@ export class PublishOutboxBatch {
       await repos.outbox.saveDeliveryState(batch);
       return { claimed: batch.length, published: published.size, failed: batch.length - published.size };
     });
+    // Counted after COMMIT: a rolled-back round published nothing as far as the outbox knows.
+    metrics.outboxPublished(result.published);
+    for (let i = 0; i < result.failed; i++) metrics.retry("outbox", "publish_failed");
+    return result;
   }
 }

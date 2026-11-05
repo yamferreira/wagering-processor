@@ -729,6 +729,33 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
   dos valores monetários usados (escolhidos para serem únicos) aparece no texto bruto. A redaction é
   testada à parte.
 
+### 11.2 Métricas (T22, §12)
+
+`GET /metrics` (aberto, formato Prometheus). Os use cases reportam fatos de domínio pela porta `Metrics`
+(`application/ports/metrics.ts`, no-op por padrão), e `PromMetrics` (prom-client) os exporta. Há um
+`Registry` por container, sem estado global, para vários runtimes conviverem num processo de teste.
+
+| Métrica (§12) | Tipo e rótulos | Onde é medida |
+|---|---|---|
+| Transações por status | `wagering_transactions_total{kind,status,channel}` | submissão (HTTP/SQS, incluindo FAILED), worker (WORKER), abertura de wallet (OPENING) |
+| Duplicatas detectadas | `idempotent_replays_total{channel}`, `idempotency_conflicts_total{reason}`, `inbox_duplicates_total{consumer}` | replay idempotente, conflito 409/DLQ, reentrega reconhecida pela inbox |
+| Retries | `retries_total{component,reason}` | `db_transaction` (retry no lugar por deadlock/serialização/versão), `consumer` (`ChangeMessageVisibility`), `outbox` (falha de publicação), `pending_reference` (reagendamento) |
+| Mensagens em DLQ | `dlq_messages_total{reason}` + gauge `dlq_depth` | contador por processo; profundidade lida da SQS no scrape |
+| Conflitos de lock (A30) | histograma `wallet_lock_wait_seconds` + `wallet_lock_conflicts_total{type}` | espera no `FOR UPDATE` da wallet; `lock_timeout`/`deadlock`/`serialization`/`version_conflict` vindos do `TransactionRunner` |
+| Outbox lag | gauges `outbox_pending` e `outbox_lag_seconds` + `outbox_published_total` | pendentes e idade da mais antiga lidos do PostgreSQL no scrape (estado global) |
+| Latência de processamento | histograma `wagering_processing_duration_seconds{channel}` | submissão inteira (HTTP e SQS) e resolução no worker |
+| Divergência de reconciliação | `reconciliation_divergences_total` | T23 |
+
+Também entram as métricas padrão de processo (`collectDefaultMetrics`: CPU, memória, event loop lag).
+Os gauges globais têm timeout de 2s: com o banco ou a fila fora do ar, o scrape não trava e o gauge mantém
+o último valor. **Prova:** `test/integration/observability/metrics.test.ts` executa um roteiro (wallet,
+BET, replay, conflito, 422, pendência resolvida pelo worker, mensagem SQS com uma falha transitória e uma
+reentrega, envelope inválido, `lock_timeout`) e confere cada incremento.
+
+Sugestão de alertas: `outbox_lag_seconds > 60`, `increase(dlq_messages_total[5m]) > 0`,
+`increase(reconciliation_divergences_total[5m]) > 0` (crítico) e p99 de `wallet_lock_wait_seconds` > 1s
+(hot wallet).
+
 ## 12. Trade-offs e limitações
 
 - **CPU do ORM no hot path:** cerca de 10ms de CPU por submissão no processo (§6.2). Escala-se com mais

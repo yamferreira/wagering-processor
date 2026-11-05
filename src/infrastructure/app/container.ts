@@ -24,6 +24,9 @@ import { normalizeQueueUrl } from "../messaging/sqs/queue-provisioner";
 import { createSqsClient, SqsQueue } from "../messaging/sqs/sqs.client";
 import { type HealthCheck, readinessChecks } from "../observability/health-checks";
 import { createLogger } from "../observability/logger";
+import { PromMetrics } from "../observability/metrics";
+import type { LockConflictType } from "../../application/ports/metrics";
+import { TransientReason } from "../../application/errors";
 import { initOrm } from "../persistence/orm";
 import { MikroOrmTransactionRunner } from "../persistence/transaction-runner";
 
@@ -45,6 +48,7 @@ export interface Container {
   faults: FaultInjector;
   sqs: MessagingQueues;
   handleWagerMessage: HandleWagerMessage;
+  metrics: PromMetrics;
   publishOutbox: PublishOutboxBatch;
   resolvePending: ResolvePendingReference;
   runner: TransactionRunner;
@@ -77,12 +81,32 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
   const orm = overrides.orm ?? (await initOrm(config.DATABASE_URL, config.DB_POOL_MAX));
   const clock = overrides.clock ?? systemClock;
   const ids = uuidV7Generator;
-  const runner = new MikroOrmTransactionRunner(orm, clock, {
-    lockTimeoutMs: config.DB_LOCK_TIMEOUT_MS,
-    statementTimeoutMs: config.DB_STATEMENT_TIMEOUT_MS,
-    idleInTransactionTimeoutMs: config.DB_IDLE_IN_TX_TIMEOUT_MS,
-    maxRetries: config.DB_TX_MAX_RETRIES,
+  const sqs = createQueues(config);
+  // Scrape-time sources read the shared state (database / broker), so every instance reports the same value.
+  const metrics = new PromMetrics({
+    outboxLag: () => runner.read((repos) => repos.outbox.lag()),
+    dlqDepth: async () => {
+      const depth = await sqs.dlq.approximateDepth();
+      return depth.visible + depth.inFlight + depth.delayed;
+    },
   });
+  const runner = new MikroOrmTransactionRunner(
+    orm,
+    clock,
+    {
+      lockTimeoutMs: config.DB_LOCK_TIMEOUT_MS,
+      statementTimeoutMs: config.DB_STATEMENT_TIMEOUT_MS,
+      idleInTransactionTimeoutMs: config.DB_IDLE_IN_TX_TIMEOUT_MS,
+      maxRetries: config.DB_TX_MAX_RETRIES,
+    },
+    {
+      onRetry: (reason) => {
+        metrics.retry("db_transaction", reason);
+        recordLockConflict(metrics, reason);
+      },
+      onTransientFailure: (reason) => recordLockConflict(metrics, reason),
+    },
+  );
   const retryPolicy = ReferenceRetryPolicy.of({
     maxAttempts: config.PENDING_REF_MAX_ATTEMPTS,
     baseDelayMs: config.PENDING_REF_BASE_MS,
@@ -91,8 +115,7 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
   const supportedCurrencies = config.SUPPORTED_CURRENCIES;
   const faults = overrides.faults ?? (config.FAULTS ? new EnvFaultInjector(config.FAULTS) : noFaults);
   const logger = overrides.logger ?? createLogger({ level: config.LOG_LEVEL });
-  const sqs = createQueues(config);
-  const submit = new SubmitWagerTransaction({ runner, ids, clock, faults, retryPolicy, supportedCurrencies });
+  const submit = new SubmitWagerTransaction({ runner, ids, clock, faults, retryPolicy, supportedCurrencies, metrics });
   const basePublisher = new SqsEventPublisher(sqs.events);
   const eventPublisher = overrides.decorateEventPublisher?.(basePublisher) ?? basePublisher;
 
@@ -101,13 +124,14 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
     logger,
     faults,
     sqs,
+    metrics,
     runner,
     ids,
     clock,
     identities: overrides.identities ?? new NoopProviderIdentity(),
-    createWallet: new CreateWallet({ runner, ids, clock, supportedCurrencies }),
+    createWallet: new CreateWallet({ runner, ids, clock, supportedCurrencies, metrics }),
     submit,
-    handleWagerMessage: new HandleWagerMessage({ consumerName: WAGER_CONSUMER_NAME, submit, runner, clock, faults }),
+    handleWagerMessage: new HandleWagerMessage({ consumerName: WAGER_CONSUMER_NAME, submit, runner, clock, faults, metrics }),
     resolvePending: new ResolvePendingReference({
       runner,
       ids,
@@ -115,9 +139,17 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
       retryPolicy,
       batchSize: config.PENDING_REF_BATCH_SIZE,
       leaseMs: config.PENDING_REF_LEASE_MS,
+      metrics,
       logger: logger.child({ component: "pending-reference-worker" }),
     }),
-    publishOutbox: new PublishOutboxBatch({ runner, publisher: eventPublisher, clock, faults, batchSize: config.OUTBOX_BATCH_SIZE }),
+    publishOutbox: new PublishOutboxBatch({
+      runner,
+      publisher: eventPublisher,
+      clock,
+      faults,
+      batchSize: config.OUTBOX_BATCH_SIZE,
+      metrics,
+    }),
     getWallet: new GetWallet(runner),
     getLedger: new GetWalletLedger(runner),
     getTransaction: new GetWagerTransaction(runner),
@@ -159,4 +191,16 @@ function createQueues(config: AppConfig): MessagingQueues {
     dlq: new SqsQueue(client, byName(config.SQS_DLQ)),
     events: new SqsQueue(publishClient, byName(config.SQS_EVENTS_QUEUE)),
   };
+}
+
+const LOCK_CONFLICTS: Partial<Record<string, LockConflictType>> = {
+  [TransientReason.LockTimeout]: "lock_timeout",
+  [TransientReason.Deadlock]: "deadlock",
+  [TransientReason.SerializationFailure]: "serialization",
+  [TransientReason.ConcurrencyConflict]: "version_conflict",
+};
+
+function recordLockConflict(metrics: PromMetrics, reason: string): void {
+  const type = LOCK_CONFLICTS[reason];
+  if (type) metrics.lockConflict(type);
 }

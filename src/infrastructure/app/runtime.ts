@@ -42,6 +42,10 @@ export async function startRuntime(config: AppConfig, overrides: ContainerOverri
           handler: container.handleWagerMessage,
           faults: container.faults,
           logger: log.child({ component: "consumer" }),
+          observer: {
+            onRetry: (failure) => container.metrics.retry("consumer", failure.code),
+            onDeadLetter: (failure) => container.metrics.deadLettered(failure.code),
+          },
         },
         {
           concurrency: config.CONSUMER_CONCURRENCY,

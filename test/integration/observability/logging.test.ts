@@ -12,9 +12,10 @@ setDefaultTimeout(60_000);
 /**
  * T21 — §12: JSON logs with correlationId, messageId, transactionId, walletId and providerId; no
  * sensitive data or full financial payloads. The amounts used here are distinctive so the raw
- * log text can be searched for them.
+ * log text can be searched for them — and cannot occur inside an ISO timestamp (seconds are
+ * 00–59, so "71.11" or "731.19" never match "…:SS.mmm").
  */
-const AMOUNTS = ["731.19", "123.45", "607.74", "5000.00", "11.11", "42.42"];
+const AMOUNTS = ["731.19", "123.45", "607.74", "5000.00", "71.11", "92.42"];
 
 class CapturedLog {
   readonly raw: string[] = [];
@@ -63,10 +64,10 @@ describe("structured logging", () => {
     const tooBig = wagerCommand(wallet, { money: { amount: "5000.00", currency: "BRL" } });
     const { idempotencyKey: bigKey, ...bigBody } = tooBig;
     expect((await post("/wagering/transactions", bigBody, { "Idempotency-Key": bigKey })).status).toBe(422);
-    expect((await post("/wagering/transactions", { kind: "BET", money: { amount: "42.42" } }, { "Idempotency-Key": "k-invalid" })).status).toBe(400);
+    expect((await post("/wagering/transactions", { kind: "BET", money: { amount: "92.42" } }, { "Idempotency-Key": "k-invalid" })).status).toBe(400);
 
     // SQS.
-    const viaQueue = wagerCommand(wallet, { money: { amount: "11.11", currency: "BRL" } });
+    const viaQueue = wagerCommand(wallet, { money: { amount: "71.11", currency: "BRL" } });
     const envelope = wagerEnvelope(viaQueue, { correlationId: "corr-sqs" });
     await sendEnvelope(h.queues, envelope);
     const processed = await waitFor(() => capture.find((l) => l.msg === "message processed" && l.messageId === envelope.messageId), {
@@ -74,12 +75,12 @@ describe("structured logging", () => {
     });
 
     // Worker: a ROLLBACK that waits for its BET, resolved after the BET arrives.
-    const late = wagerCommand(wallet, { roundId: "r-late", money: { amount: "11.11", currency: "BRL" } });
+    const late = wagerCommand(wallet, { roundId: "r-late", money: { amount: "71.11", currency: "BRL" } });
     const rollback = wagerCommand(wallet, {
       kind: "ROLLBACK",
       roundId: "r-late",
       referenceExternalTransactionId: late.externalTransactionId,
-      money: { amount: "11.11", currency: "BRL" },
+      money: { amount: "71.11", currency: "BRL" },
     });
     const { idempotencyKey: rbKey, ...rbBody } = rollback;
     const pending = await post("/wagering/transactions", rbBody, { "Idempotency-Key": rbKey });

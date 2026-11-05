@@ -3,6 +3,7 @@ import { decide } from "../../domain/wager/decide";
 import { WagerTransactionStatus as Status } from "../../domain/wager/kinds";
 import type { ReferenceRetryPolicy } from "../../domain/wager/reference-retry-policy";
 import { type Logger, silentLogger } from "../ports/logger";
+import { type Metrics, noMetrics, secondsSince } from "../ports/metrics";
 import type { PendingReferenceClaim } from "../ports/repositories";
 import type { Clock, IdGenerator } from "../ports/system";
 import type { TransactionRunner } from "../ports/transaction-runner";
@@ -26,6 +27,7 @@ export interface ResolvePendingReferenceDeps {
   /** How long a claimed item stays reserved for this worker (crash safety). */
   leaseMs: number;
   logger?: Logger;
+  metrics?: Metrics;
 }
 
 /**
@@ -67,11 +69,26 @@ export class ResolvePendingReference {
   }
 
   async resolve(claim: PendingReferenceClaim): Promise<PendingResolution> {
+    const metrics = this.deps.metrics ?? noMetrics;
+    const startedAt = performance.now();
+    const result = await this.evaluate(claim);
+    if (result.resolution === "STILL_PENDING") metrics.retry("pending_reference", "REFERENCE_STILL_MISSING");
+    if (result.kind && (result.resolution === "PROCESSED" || result.resolution === "REJECTED")) {
+      metrics.transactionRecorded(result.kind, result.resolution, "WORKER");
+      metrics.processingDuration("WORKER", secondsSince(startedAt));
+    }
+    return result.resolution;
+  }
+
+  private async evaluate(claim: PendingReferenceClaim): Promise<{ resolution: PendingResolution; kind?: string }> {
     const { runner, ids, clock, retryPolicy } = this.deps;
+    const metrics = this.deps.metrics ?? noMetrics;
     return runner.run(async (repos) => {
+      const lockRequestedAt = performance.now();
       const wallet = await repos.wallets.lockById(claim.walletId);
+      metrics.lockWait(secondsSince(lockRequestedAt));
       const tx = await repos.transactions.lockById(claim.id);
-      if (!wallet || !tx || tx.status !== Status.PendingReference) return "SKIPPED";
+      if (!wallet || !tx || tx.status !== Status.PendingReference) return { resolution: "SKIPPED" };
 
       const now = clock.now();
       const lookup = await resolveReference(repos, tx);
@@ -82,7 +99,7 @@ export class ResolvePendingReference {
         retryPolicy,
       });
       await repos.transactions.update(tx, Status.PendingReference);
-      if (outcome.status === Status.PendingReference) return "STILL_PENDING";
+      if (outcome.status === Status.PendingReference) return { resolution: "STILL_PENDING", kind: tx.kind };
 
       const ledgerEntry = outcome.status === Status.Processed ? outcome.ledgerEntry : undefined;
       if (ledgerEntry) {
@@ -92,7 +109,7 @@ export class ResolvePendingReference {
       const nextContext = eventContextFactory({ correlationId: tx.id, causationId: tx.id, channel: "WORKER" }, ids, clock);
       await repos.outbox.insert(outcomeEvents(tx, wallet, ledgerEntry, nextContext));
       await wakeDependentsOf(repos, tx, now);
-      return outcome.status === Status.Processed ? "PROCESSED" : "REJECTED";
+      return { resolution: outcome.status === Status.Processed ? "PROCESSED" : "REJECTED", kind: tx.kind };
     });
   }
 }
