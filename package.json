@@ -37,6 +37,8 @@
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down",
     "sqs:setup": "bun run scripts/setup-queues.ts",
-    "test:all": "bun run test && bun run test:concurrency"
+    "test:all": "bun run test && bun run test:concurrency",
+    "sqs:send": "bun run scripts/send-message.ts",
+    "test:load": "bun run test/load/load.ts"
   }
 }

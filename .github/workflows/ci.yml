@@ -113,3 +113,63 @@ jobs:
           grep -q '"signal":"SIGTERM"' smoke.log
           grep -q '"msg":"runtime stopped"' smoke.log
           test "$code" = "0"
+
+  load:
+    name: load test (informational, Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Never blocks a merge: the numbers feed docs/LOAD-TEST.md; correctness is gated by the test job.
+    continue-on-error: true
+    needs: test
+
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: wagering
+          POSTGRES_PASSWORD: wagering
+          POSTGRES_DB: wagering
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U wagering -d wagering"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      localstack:
+        image: localstack/localstack:4.14.0
+        env:
+          SERVICES: sqs
+          AWS_DEFAULT_REGION: us-east-1
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -fs http://localhost:4566/_localstack/health | grep -Eq 'sqs.{0,4}(available|running)'"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 40
+
+    env:
+      DATABASE_URL: postgres://wagering:wagering@localhost:55432/wagering
+      SQS_ENDPOINT: http://localhost:4566
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Configure PostgreSQL (max_connections = 300)
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U wagering -d wagering -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart ${{ job.services.postgres.id }}
+          for i in $(seq 1 60); do docker exec ${{ job.services.postgres.id }} pg_isready -U wagering -d wagering && break; sleep 1; done
+      - name: Driver round-trip probe
+        run: bun test/load/driver-probe.ts
+      - name: Load test (1 vs 3 instances)
+        run: bun run test:load
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-report
+          path: reports/
