@@ -216,7 +216,33 @@ _(T10)_
 
 ## 7. Idempotência
 
-_(T08/T11)_
+### 7.1 Algoritmo do `payloadHash` (T08, §9, A14)
+
+1. **Subconjunto de negócio**, selecionado explicitamente: `providerId`, `externalTransactionId`,
+   `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency` e
+   `referenceExternalTransactionId` (omitido quando ausente). Não entram: header
+   `Idempotency-Key`, `messageId`, `occurredAt`, `type`, `correlationId` nem qualquer metadado de transporte.
+2. **JSON canônico:** chaves ordenadas recursivamente (ordem de code unit UTF-16, a de
+   `Array.prototype.sort`), sem espaços, propriedades `undefined` omitidas, strings escapadas como
+   em `JSON.stringify`. Valores sem forma JSON estável (bigint, NaN, Infinity, funções) são rejeitados.
+3. **SHA-256** do texto UTF-8, em hexadecimal minúsculo (64 caracteres).
+
+Como `amount` tem formato único (A1), a mesma quantia sempre produz o mesmo texto. HTTP e SQS
+geram o mesmo hash, então o replay funciona entre canais. Um vetor fixo (o exemplo da §9, com o hash
+calculado de forma independente via `sha256sum`) trava o algoritmo em teste.
+
+### 7.2 Regra de decisão (domínio)
+
+`evaluateIdempotency(existing, { idempotencyKey, payloadHash })`:
+
+| Situação | Resultado |
+|---|---|
+| mesma key, mesmo hash | `REPLAY` da transação original |
+| mesma key, hash diferente | `CONFLICT / IDEMPOTENCY_KEY_REUSED` → 409 |
+| mesmo `(providerId, externalTransactionId)` com outra key | `CONFLICT / EXTERNAL_TRANSACTION_CONFLICT` → 409 (A13) |
+
+A garantia vem do banco (`UNIQUE(idempotency_key)` e `UNIQUE(provider_id, external_transaction_id)`,
+T09). Essa função só interpreta a colisão.
 
 ## 8. API HTTP e mapeamento de status
 
