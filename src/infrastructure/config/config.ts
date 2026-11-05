@@ -13,6 +13,35 @@ const ConfigSchema = z.object({
   AWS_REGION: z.string().min(1).default("us-east-1"),
   AWS_ACCESS_KEY_ID: z.string().min(1).default("test"),
   AWS_SECRET_ACCESS_KEY: z.string().min(1).default("test"),
+  SQS_INPUT_QUEUE: z.string().endsWith(".fifo").default("wager-transactions.fifo"),
+  SQS_DLQ: z.string().endsWith(".fifo").default("wager-transactions-dlq.fifo"),
+  SQS_EVENTS_QUEUE: z.string().endsWith(".fifo").default("wagering-events.fifo"),
+  /** Broker-side safety net (redrive maxReceiveCount); the consumer gives up earlier (A27). */
+  SQS_REDRIVE_MAX_RECEIVES: intFromEnv(6),
+  /** Application-side limit: a transient failure on the N-th receive goes to the DLQ (A27). */
+  SQS_MAX_RECEIVES: intFromEnv(5),
+  SQS_VISIBILITY_TIMEOUT_S: intFromEnv(30),
+  SQS_WAIT_TIME_S: z.coerce.number().int().min(0).max(20).default(20),
+  SQS_RETRY_BASE_S: intFromEnv(2),
+  SQS_RETRY_CAP_S: intFromEnv(300),
+  CONSUMER_CONCURRENCY: intFromEnv(10),
+  OUTBOX_BATCH_SIZE: intFromEnv(50),
+  OUTBOX_POLL_MS: intFromEnv(200),
+  PENDING_REF_BATCH_SIZE: intFromEnv(20),
+  PENDING_REF_POLL_MS: intFromEnv(500),
+  /** Comma-separated roles of this process (A31): api, consumer, publisher, pending-worker. */
+  ROLES: z
+    .string()
+    .default("api,consumer,publisher,pending-worker")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((role) => role.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.enum(["api", "consumer", "publisher", "pending-worker"])).min(1)),
+  /** Test-only fault injection (FAULTS=point:action,...); ignored unless set. */
+  FAULTS: z.string().default(""),
   SUPPORTED_CURRENCIES: z
     .string()
     .default("BRL,USD,EUR")

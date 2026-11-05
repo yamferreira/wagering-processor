@@ -443,7 +443,28 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 
 ## 9. Mensageria: inbox, outbox, PENDING_REFERENCE
 
-_(dia 2)_
+### 9.1 Topologia de filas (T13, §10, A24)
+
+| Fila | Papel | Atributos |
+|---|---|---|
+| `wager-transactions.fifo` | entrada `WagerTransactionRequested` | FIFO, `ContentBasedDeduplication=false`, visibility 30s, `RedrivePolicy` → DLQ com `maxReceiveCount=6` |
+| `wager-transactions-dlq.fifo` | mensagens permanentes ou esgotadas | FIFO, retenção 14 dias |
+| `wagering-events.fifo` | destino da outbox (A24) | FIFO, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId` |
+
+- **Provisionamento** (`scripts/setup-queues.ts` → `provisionQueues`): cria a DLQ, lê o ARN e cria a
+  entrada com o redrive. É idempotente: se a fila já existe, faz `SetQueueAttributes` para convergir
+  (rodar duas vezes, ou com atributos alterados, não falha).
+- **URLs:** o LocalStack devolve URLs virtual-host (`sqs.<região>.localhost.localstack.cloud`), que só
+  resolvem por DNS público. `normalizeQueueUrl` mantém o path e usa o `SQS_ENDPOINT` configurado,
+  então nada depende de DNS externo.
+- **Deduplicação do broker** (`MessageDeduplicationId`, janela de 5 min) existe, mas **não** é usada
+  como garantia: a correção vem da inbox e das constraints do banco (§5: "não confiar apenas em SQS FIFO").
+- **Validação do LocalStack 4.14.0** (`test/integration/messaging/sqs.test.ts`): FIFO, deduplicação
+  explícita, envio em lote, `ChangeMessageVisibility` (0 e N segundos, com `ApproximateReceiveCount`
+  crescente) e redrive para a DLQ ao exceder `maxReceiveCount` funcionam. Não foi preciso trocar para
+  o MiniStack.
+- **Isolamento em teste:** cada arquivo de teste cria suas próprias filas com prefixo único
+  (`t<pid>-<label>-<rand>-…`) e as apaga no `afterAll`.
 
 ## 10. Autenticação
 
