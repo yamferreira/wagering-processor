@@ -90,6 +90,27 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
 
 `WALLET_NOT_FOUND` (A9) não é `failureCode`: a transação não é persistida (FK) e a resposta é 404.
 
+### 4.3 Wallet e WalletLedgerEntry (T04)
+
+- **Única via de mudança de saldo:** `debit`/`credit` (e `move(direction)`, usado pelas regras).
+  Cada chamada devolve o `WalletLedgerEntry` criado no mesmo passo. A entrada é construída e
+  validada **antes** de o agregado mudar, então uma entrada inválida não deixa o saldo alterado.
+- **`version`:** começa em 1. O crédito de abertura **não** incrementa a versão: a entrada de
+  abertura leva `walletVersion = 1`, como no exemplo da §9, que mostra `version: 1` com saldo 1000.00.
+  Cada movimento posterior incrementa a versão em exatamente 1, e a entrada registra a versão
+  resultante. Daí vale a relação `version == nº de lançamentos` (ou `+1` se a wallet abriu com
+  saldo zero), que o schema reforça com `UNIQUE(wallet_id, wallet_version)` (T09).
+- **`walletVersion` no lançamento:** campo adicional ao esqueleto da §6.4. Serve de chave de
+  ordenação estável do ledger (cursor, A20) e de elo de encadeamento (`balance_before` da versão
+  *n* = `balance_after` da versão *n−1*).
+- **Guardas:** `debit` lança `InsufficientFundsError` sem alterar estado. O caminho de negócio
+  verifica `canDebit` antes (T06) e transforma isso em `INSUFFICIENT_FUNDS` /
+  `REVERSAL_INSUFFICIENT_FUNDS`. Movimento zero ou de outra moeda é rejeitado.
+- **Abertura:** `Wallet.open` recebe os ids da transação OPENING e do lançamento (o domínio não
+  gera ids). Com saldo inicial zero não há OPENING nem lançamento.
+- **Imutabilidade do lançamento:** campos `readonly` + `Object.freeze`, e datas copiadas
+  defensivamente. `create` valida a aritmética, valores positivos, uma única moeda, saldos não negativos e `walletVersion ≥ 1`.
+
 ## 5. Persistência e schema
 
 _(T09/T10)_
