@@ -762,6 +762,26 @@ Sugestão de alertas: `outbox_lag_seconds > 60`, `increase(dlq_messages_total[5m
 `increase(reconciliation_divergences_total[5m]) > 0` (crítico) e p99 de `wallet_lock_wait_seconds` > 1s
 (hot wallet).
 
+### 11.3 CI (T28)
+
+`.github/workflows/ci.yml` roda em `ubuntu-24.04`, com **PostgreSQL 16.15** e **LocalStack 4.14.0** como
+services, em todo push e em PR para a `main`:
+
+1. Bun fixado (`oven-sh/setup-bun` 1.3.14), com uma etapa que falha se não for a versão do
+   `packageManager` do `package.json`.
+2. `bun install --frozen-lockfile`.
+3. `max_connections = 300` (como no compose): services não aceitam argumentos de comando, então a etapa
+   usa `ALTER SYSTEM` e reinicia o container do service.
+4. Caminho do README: `migration:up` → `migration:down` → `migration:up` → `sqs:setup`.
+5. `typecheck`, `test:unit`, `test:integration` e `test:concurrency` em etapas separadas.
+6. Smoke: `bun src/main.ts` com todos os papéis, `/health/ready` e `/metrics`, depois `kill -TERM`. Exige
+   exit 0 e as linhas `"signal":"SIGTERM"` e `runtime stopped` no log.
+
+O CI valida em Linux o caminho de **SIGTERM real**, que no Windows não pode ser testado (§9.2): o harness
+de processos usa `kill("SIGTERM")` fora do Windows, inclusive no teste do consumidor com mensagem em
+andamento. O primeiro run em Linux passou sem nenhuma correção específica de plataforma (unidade 245 em
+0,1s, integração 179 em 71s, concorrência 17 em 51s).
+
 ## 12. Trade-offs e limitações
 
 - **CPU do ORM no hot path:** cerca de 10ms de CPU por submissão no processo (§6.2). Escala-se com mais
