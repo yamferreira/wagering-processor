@@ -436,6 +436,24 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 **Formato único de erro:** `{ "error": { "code", "message", ...detalhes } }`. Na 422 os detalhes são
 `providerAction`, `transactionId`, `status`, `balance` (saldo observado) e `idempotentReplay`.
 
+### 8.4 Health e falhas transitórias (T17, §3, §9)
+
+- `GET /health/live`: sempre 200 enquanto o processo responde, sem checar dependências (uma queda do
+  banco não deve fazer o orquestrador reiniciar processos saudáveis).
+- `GET /health/ready`: checa `postgres` (`SELECT 1`) e `sqs` (`GetQueueAttributes` da fila de entrada), cada
+  um com timeout de 2s, e reporta cada dependência separadamente:
+  `{ "status": "not_ready", "checks": { "postgres": { "status": "up" }, "sqs": { "status": "down", "error": "…" } } }`
+  com 503 quando qualquer uma cai.
+- **Boot sem dependências:** o processo sobe com o PostgreSQL ou a SQS fora do ar (o pool conecta sob
+  demanda e as URLs das filas são resolvidas no primeiro uso). Ele fica `not_ready` e se recupera sozinho
+  quando a dependência volta.
+- **503 + `Retry-After: 1`** para toda `TransientInfrastructureError`, em todos os endpoints: conexão recusada
+  ou caída, `lock_timeout` (55P03), `statement_timeout` (57014) e deadlock/serialização depois dos retries
+  internos. O `reason` diz qual foi. Nada fica meio gravado (a transação SQL inteira faz rollback), então o
+  provedor reenvia com a mesma key. Validação de payload continua respondendo 400 sem tocar no banco.
+- **SQS fora do ar não afeta a HTTP:** a submissão grava o evento na outbox, e o publisher só o envia
+  quando a fila voltar (§9.3).
+
 ### 8.3 Contratos
 
 - `POST /wallets` → `{ id, playerId, balance, version }`.

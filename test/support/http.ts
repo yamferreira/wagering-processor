@@ -7,6 +7,9 @@ import { createTestDatabase, type TestDatabase } from "./db";
 import { ScriptedFaults } from "./faults";
 import { initOrm } from "../../src/infrastructure/persistence/orm";
 import type { MikroORM } from "@mikro-orm/postgresql";
+import type { AppConfig } from "../../src/infrastructure/config/config";
+import { silentLogger } from "../../src/application/ports/logger";
+import { createTestQueues, type TestQueues } from "./sqs";
 
 export interface ApiResponse<T = any> {
   status: number;
@@ -21,23 +24,33 @@ export interface HttpHarness {
   app: INestApplication;
   baseUrl: string;
   faults: ScriptedFaults;
+  queues: TestQueues;
   request<T = any>(method: string, path: string, options?: { body?: unknown; headers?: Record<string, string>; raw?: string }): Promise<ApiResponse<T>>;
   close(): Promise<void>;
 }
 
-export async function createHttpHarness(options: { identities?: ProviderIdentityPort } = {}): Promise<HttpHarness> {
+export async function createHttpHarness(
+  options: { identities?: ProviderIdentityPort; config?: Partial<AppConfig> } = {},
+): Promise<HttpHarness> {
   const db = await createTestDatabase();
+  const queues = await createTestQueues({ label: "http" });
   const config = loadConfig(process.env, {
     DATABASE_URL: db.url,
+    SQS_INPUT_QUEUE: queues.topology.input,
+    SQS_DLQ: queues.topology.dlq,
+    SQS_EVENTS_QUEUE: queues.topology.events,
+    LOG_LEVEL: "silent",
     PENDING_REF_MAX_ATTEMPTS: 3,
     PENDING_REF_BASE_MS: 50,
     PENDING_REF_CAP_MS: 200,
+    ...options.config,
   });
   const orm = await initOrm(db.url, 20);
   const faults = new ScriptedFaults();
   const container = await buildContainer(config, {
     orm,
     faults,
+    logger: silentLogger,
     ...(options.identities ? { identities: options.identities } : {}),
   });
   const app = await createHttpApp(container);
@@ -52,6 +65,7 @@ export async function createHttpHarness(options: { identities?: ProviderIdentity
     app,
     baseUrl,
     faults,
+    queues,
     async request(method, path, { body, headers = {}, raw } = {}) {
       const init: RequestInit = { method, headers: { ...headers } };
       if (raw !== undefined || body !== undefined) {
@@ -67,6 +81,7 @@ export async function createHttpHarness(options: { identities?: ProviderIdentity
       await container.close();
       await orm.close(true);
       await db.drop();
+      await queues.destroy();
     },
   };
 }

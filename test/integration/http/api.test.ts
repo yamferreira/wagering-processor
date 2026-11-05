@@ -338,7 +338,7 @@ describe("cross-cutting HTTP behaviour", () => {
     expect((await h.request("GET", "/health/live")).body).toEqual({ status: "ok" });
     const ready = await h.request("GET", "/health/ready");
     expect(ready.status).toBe(200);
-    expect(ready.body).toEqual({ status: "ready", checks: { postgres: { status: "up" } } });
+    expect(ready.body).toEqual({ status: "ready", checks: { postgres: { status: "up" }, sqs: { status: "up" } } });
   });
 });
 

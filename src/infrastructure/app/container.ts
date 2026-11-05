@@ -22,14 +22,12 @@ import { WAGER_CONSUMER_NAME } from "../messaging/consumers/wager-transaction.co
 import { SqsEventPublisher } from "../messaging/outbox/sqs-event-publisher";
 import { normalizeQueueUrl } from "../messaging/sqs/queue-provisioner";
 import { createSqsClient, SqsQueue } from "../messaging/sqs/sqs.client";
+import { type HealthCheck, readinessChecks } from "../observability/health-checks";
 import { createLogger } from "../observability/logger";
 import { initOrm } from "../persistence/orm";
 import { MikroOrmTransactionRunner } from "../persistence/transaction-runner";
 
-export interface HealthCheck {
-  name: string;
-  check(): Promise<void>;
-}
+export type { HealthCheck } from "../observability/health-checks";
 
 /** Composition root: every use case and adapter, wired once per process. */
 export interface MessagingQueues {
@@ -123,14 +121,7 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
     getLedger: new GetWalletLedger(runner),
     getTransaction: new GetWagerTransaction(runner),
     reconcile: new ReconcileWallet(runner, overrides.reconciliationObserver),
-    readiness: [
-      {
-        name: "postgres",
-        check: async () => {
-          await orm.em.fork().execute("SELECT 1");
-        },
-      },
-    ],
+    readiness: readinessChecks({ orm, input: sqs.input }),
     async close() {
       sqs.client.destroy();
       sqs.publishClient.destroy();

@@ -25,7 +25,7 @@ export class HealthController {
     return { status: "ok" };
   }
 
-  /** Dependencies reachable: PostgreSQL (and SQS from T17). 503 when any check fails. */
+  /** Dependencies reachable: PostgreSQL and SQS, reported separately. 503 when any check fails. */
   @Get("ready")
   async ready(@Res() res: Response) {
     const results = await Promise.all(
