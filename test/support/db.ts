@@ -1,6 +1,7 @@
 import { SQL } from "bun";
 import { loadConfig } from "../../src/infrastructure/config/config";
 import { runMigrations } from "../../src/infrastructure/persistence/migrate";
+import { ensureTestInfrastructure } from "./preflight";
 
 /**
  * Test database isolation: one migrated template per test process, cloned into a fresh
@@ -83,6 +84,7 @@ export interface TestDatabase {
 let counter = 0;
 
 export async function createTestDatabase(): Promise<TestDatabase> {
+  await ensureTestInfrastructure();
   await ensureTemplate();
   counter += 1;
   const name = `${PREFIX}${process.pid}_${counter}_${Date.now().toString(36)}`;
@@ -113,6 +115,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
 
 /** Creates an empty database (no migrations) for migration tests. */
 export async function createEmptyDatabase(): Promise<TestDatabase> {
+  await ensureTestInfrastructure();
   counter += 1;
   const name = `${PREFIX}${process.pid}_${counter}_empty`;
   const admin = adminConnection();

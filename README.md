@@ -101,13 +101,16 @@ constraints únicas e inbox), então qualquer número de instâncias pode rodar 
 ## Testes
 
 Todas as suítes usam **PostgreSQL e LocalStack reais** (o `docker compose` precisa estar no ar), nunca mocks.
+Se um dos dois não responder, a primeira suíte que precisar deles para a execução na hora com uma única
+mensagem (`Suba os dois com: docker compose up -d --wait`), em vez de um erro de conexão por teste. Os testes
+de unidade não dependem deles.
 
 | Comando | O que roda | Tempo (Windows 11, local) | Tempo (CI, Linux) |
 |---|---|---|---|
 | `bun run typecheck` | `tsc --noEmit` (strict) | ~5 s | ~1 s |
-| `bun run test:unit` | 245 testes de domínio e aplicação | ~0,3 s | ~0,1 s |
-| `bun run test:integration` | 189 testes: schema/constraints (incl. role de runtime), repositórios, use cases, HTTP, SQS, inbox/DLQ, outbox, worker, observabilidade | ~90 s | ~80 s |
-| `bun test` | unidade + integração | ~90 s | — |
+| `bun run test:unit` | 254 testes de domínio, aplicação e workers | ~0,3 s | ~0,1 s |
+| `bun run test:integration` | 198 testes: schema/constraints (incl. role de runtime), repositórios, use cases, HTTP, SQS, inbox/DLQ, outbox, worker, observabilidade | ~110 s | ~80 s |
+| `bun test` | unidade + integração | ~110 s | — |
 | `bun run test:concurrency` | 17 testes com paralelismo real: 50× a mesma aposta, §8, hot wallet, 50 wallets, **3 processos reais**, crash depois do commit e antes do ack, SIGKILL + restart | ~90 s | ~48–57 s |
 | `bun run test:all` | `bun test` e depois `test:concurrency` | ~3 min | — |
 | `bun run audit:money` | auditoria estática: nenhum `number`/float para dinheiro em `src`, testes e scripts | <1 s | <1 s |
