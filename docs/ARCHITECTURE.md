@@ -276,14 +276,22 @@ referência chega.
 | Coerência de status | CHECKs: `failure_code` ⇔ REJECTED/FAILED; PROCESSED exige `processed_at` + `resulting_balance`; PENDING_REFERENCE exige `next_reference_attempt_at` |
 | Regras por kind | REFUND/ROLLBACK exigem referência; BET/OPENING não podem ter; valor > 0 exceto LOSS; `provider_id = 'internal'` ⇔ OPENING; round/game obrigatórios exceto OPENING |
 | Outbox/Inbox | PK da outbox = `eventId`; conteúdo imutável e publicação definitiva (trigger). Inbox com PK `(consumer_name, message_id)` e imutável |
+| Lançamento descreve a sua transação (T27) | trigger `ledger_check_transaction` (AFTER INSERT, imediato): a transação precisa estar PROCESSED e não ser LOSS, com o mesmo valor e moeda; a direção segue o kind (BET → DEBIT; WIN/REFUND/OPENING → CREDIT; ROLLBACK → o inverso do que reverte) → `23000`. Migration `Migration20261106000000_ledger_matches_transaction` |
+| Ninguém em runtime burla o schema (T27) | role `wagering_app` (migration `…_runtime_role`): `NOSUPERUSER`, não é dono de nada, `SELECT, INSERT, UPDATE` nas tabelas de estado e só `SELECT, INSERT` no ledger. `UPDATE/DELETE/TRUNCATE` no ledger, `DISABLE TRIGGER`, `session_replication_role = replica` e DDL → `42501` (testado) |
 
 `resulting_balance_currency` existe porque o saldo observado é na moeda da **wallet**, que numa
 rejeição `CURRENCY_MISMATCH` difere da moeda da operação.
 
 **Custo dos triggers deferred:** dois lookups indexados por `(wallet_id, wallet_version)` por
 commit que toca a wallet. É aceito em troca da garantia, no próprio banco, de que saldo e
-ledger não divergem mesmo diante de um bug na aplicação ou de SQL manual. Só um superuser que
-desabilite triggers consegue burlar isso, e a reconciliação detecta (T23).
+ledger não divergem mesmo diante de um bug na aplicação ou de SQL manual.
+
+**Dois roles (achado do revisor independente, T27):** o serviço conecta como `wagering_app`
+(`DATABASE_URL`) e as migrations como o dono do schema (`MIGRATION_DATABASE_URL`). Antes, o runtime usava
+o mesmo superusuário das migrations e, em tese, poderia desligar os triggers. Hoje só o dono ou um
+superusuário consegue (intervenção manual), e a reconciliação detecta a divergência (T23). Em
+desenvolvimento a migration cria o role com uma senha fixa; em produção o role e o segredo vêm de fora, e a
+migration só concede os privilégios.
 
 ### 5.3 Infraestrutura de teste
 
@@ -870,6 +878,22 @@ andamento. O primeiro run em Linux passou sem nenhuma correção específica de 
 - **Sem heartbeat de visibilidade:** o processamento de uma mensagem é limitado por `lock_timeout` (5s),
   `statement_timeout` (10s) e até 3 retries internos, bem abaixo do visibility timeout de 30s. Uma
   mensagem que ainda assim passe do timeout é reentregue, e a inbox a deduplica.
+
+## 13. Revisão final independente (T27)
+
+Um revisor que não participou da implementação conferiu, item por item, §5 (restrições invioláveis), §13
+(testes obrigatórios) e §14 (falhas eliminatórias) contra o código e o corpo dos testes. **Veredito:
+nenhum item violado; todos os eliminatórios cumpridos.** Os 6 achados de força de prova e de
+endurecimento foram corrigidos:
+
+| # | Achado | Correção |
+|---|---|---|
+| 1 | Atomicidade pela SQS só testada com falha **antes** das escritas financeiras | `consumer.test.ts` › `atomicity: a crash %s…` agora cobre `consumer:after-inbox-insert`, `submit:after-ledger-insert` e `submit:before-outbox-insert`: inbox, transação, ledger, wallet (saldo e versão) e outbox voltam juntos, e a reentrega aplica uma única vez |
+| 2 | Runtime conectava como superusuário dono do schema (poderia desligar triggers) | role `wagering_app` de menor privilégio (§5.2), com teste provando `42501` em `DISABLE TRIGGER`, `session_replication_role`, `UPDATE/DELETE/TRUNCATE` no ledger e DDL |
+| 3 | Testes "fora de ordem" concorrentes não exigiam que o caminho ocorresse | `hot-wallet`, `multi-instance › mixed load` e `restart-recovery` exigem `WagerTransactionPendingReference > 0` |
+| 4 | Invariante final não rodava ao fim de **todo** teste | `afterEach(assertLedgerInvariant)` em todos os arquivos que tocam wallets. Exceções explícitas e comentadas: `sqs.test` (sem banco), `migrations.test` (só schema), "PostgreSQL inacessível" (sem banco) e as wallets corrompidas de propósito em `reconciliation-divergence` |
+| 5 | Schema não amarrava o lançamento à transação | trigger `ledger_check_transaction` (§5.2), com 5 testes de constraint |
+| 6 | Centavos sorteados com aritmética `number` em 2 testes | PRNG em `bigint` (`test/support/random.ts`); `audit:money` passou a detectar `BigInt(Math.…)`/`BigInt(… * …)` e variáveis `cents` |
 
 ## Apêndice A — Interpretações da especificação (A1–A32)
 
