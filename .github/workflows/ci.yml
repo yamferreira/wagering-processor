@@ -45,7 +45,9 @@ jobs:
           --health-retries 40
 
     env:
-      DATABASE_URL: postgres://wagering:wagering@localhost:55432/wagering
+      # Runtime connects as the least-privilege role created by the migrations; migrations use the owner.
+      DATABASE_URL: postgres://wagering_app:wagering_app@localhost:55432/wagering
+      MIGRATION_DATABASE_URL: postgres://wagering:wagering@localhost:55432/wagering
       SQS_ENDPOINT: http://localhost:4566
 
     steps:
@@ -153,7 +155,9 @@ jobs:
           --health-retries 40
 
     env:
-      DATABASE_URL: postgres://wagering:wagering@localhost:55432/wagering
+      # Runtime connects as the least-privilege role created by the migrations; migrations use the owner.
+      DATABASE_URL: postgres://wagering_app:wagering_app@localhost:55432/wagering
+      MIGRATION_DATABASE_URL: postgres://wagering:wagering@localhost:55432/wagering
       SQS_ENDPOINT: http://localhost:4566
 
     steps:
@@ -167,6 +171,8 @@ jobs:
           docker exec ${{ job.services.postgres.id }} psql -U wagering -d wagering -c "ALTER SYSTEM SET max_connections = 300"
           docker restart ${{ job.services.postgres.id }}
           for i in $(seq 1 60); do docker exec ${{ job.services.postgres.id }} pg_isready -U wagering -d wagering && break; sleep 1; done
+      - name: Migrations (creates the runtime role)
+        run: bun run migration:up
       - name: Driver round-trip probe
         run: bun test/load/driver-probe.ts
       - name: Load test (1 vs 3 instances)

@@ -4,7 +4,10 @@ const intFromEnv = (fallback: number) => z.coerce.number().int().positive().defa
 
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().min(0).max(65535).default(3000),
-  DATABASE_URL: z.string().url().default("postgres://wagering:wagering@localhost:55432/wagering"),
+  /** Runtime connection: least-privilege role (no ownership, no superuser, ledger SELECT/INSERT only). */
+  DATABASE_URL: z.string().url().default("postgres://wagering_app:wagering_app@localhost:55432/wagering"),
+  /** Schema owner, used only by migrations (scripts/migrate.ts) and test fixtures. */
+  MIGRATION_DATABASE_URL: z.string().url().default("postgres://wagering:wagering@localhost:55432/wagering"),
   DB_POOL_MAX: intFromEnv(20),
   DB_LOCK_TIMEOUT_MS: intFromEnv(5_000),
   DB_STATEMENT_TIMEOUT_MS: intFromEnv(10_000),

@@ -115,7 +115,7 @@ async function runScenario(instanceCount: number, CONCURRENCY: number): Promise<
   const db: TestDatabase = await createTestDatabase();
   const queues: TestQueues = await createTestQueues({ label: `load${instanceCount}` });
   const base = loadConfig(process.env, {
-    DATABASE_URL: db.url,
+    DATABASE_URL: db.appUrl,
     SQS_INPUT_QUEUE: queues.topology.input,
     SQS_DLQ: queues.topology.dlq,
     SQS_EVENTS_QUEUE: queues.topology.events,
@@ -337,7 +337,7 @@ function summarize(result: ScenarioResult) {
 async function main() {
   const startedAt = new Date();
   const probeDb = await createTestDatabase();
-  const probe = await driverProbe(probeDb.url).finally(() => probeDb.drop());
+  const probe = await driverProbe(probeDb.appUrl).finally(() => probeDb.drop());
   const results: ScenarioResult[] = [];
   for (const { instances, clients } of SCENARIOS) {
     console.log(`[load] scenario: ${instances} instance(s), ${clients} clients, ${DURATION_S}s (+${WARMUP_S}s warm-up)…`);

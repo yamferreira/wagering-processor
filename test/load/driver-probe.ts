@@ -36,7 +36,7 @@ export async function driverProbe(url: string, n = 300): Promise<{ mikroOrm: Pro
 }
 
 if (import.meta.main) {
-  const url = process.env.DATABASE_URL ?? "postgres://wagering:wagering@localhost:55432/wagering";
+  const url = process.env.DATABASE_URL ?? "postgres://wagering_app:wagering_app@localhost:55432/wagering";
   const result = await driverProbe(url);
   const f = (r: ProbeResult) => `wall ${r.wall.toFixed(2)} ms, cpu ${r.cpu.toFixed(2)} ms`;
   console.log(`platform=${process.platform} bun=${Bun.version}`);

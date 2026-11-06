@@ -16,7 +16,7 @@ export async function createPersistenceHarness(
   poolMax = 20,
 ): Promise<PersistenceHarness> {
   const db = await createTestDatabase();
-  const orm = await initOrm(db.url, poolMax);
+  const orm = await initOrm(db.appUrl, poolMax);
   const runner = new MikroOrmTransactionRunner(orm, systemClock, {
     lockTimeoutMs: 5_000,
     statementTimeoutMs: 10_000,

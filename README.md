@@ -44,7 +44,7 @@ curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"   # se ainda não tive
 git clone https://github.com/yamferreira/wagering-processor.git && cd wagering-processor
 bun install --frozen-lockfile
 docker compose up -d --wait        # PostgreSQL 16.15 em :55432 + LocalStack 4.14.0 em :4566
-bun run migration:up
+bun run migration:up               # schema + role de runtime wagering_app (menor privilégio)
 bun run sqs:setup                  # cria as 3 filas FIFO (idempotente)
 bun run start                      # API + consumidor SQS + publisher da outbox + worker de PENDING_REFERENCE
 ```
@@ -91,6 +91,7 @@ Todas as suítes usam **PostgreSQL e LocalStack reais** (o `docker compose` prec
 | `bun test` | unidade + integração | ~90 s | — |
 | `bun run test:concurrency` | 17 testes com paralelismo real: 50× a mesma aposta, §8, hot wallet, 50 wallets, **3 processos reais**, crash depois do commit e antes do ack, SIGKILL + restart | ~90 s | ~51 s |
 | `bun run test:all` | `bun test` e depois `test:concurrency` | ~3 min | — |
+| `bun run audit:money` | auditoria estática: nenhum `number`/float para dinheiro em `src`, testes e scripts | <1 s | <1 s |
 | `bun run test:load` | carga: 1 × 3 instâncias, 8 e 64 clientes, relatório em `reports/` (ver `docs/LOAD-TEST.md`) | ~3 min | ~3 min (job `load`, informativo) |
 
 > **Por que a concorrência fica fora do `bun test` padrão:** juntas, as suítes passam de 3 minutos. O
@@ -225,7 +226,8 @@ saem em `wagering-events.fifo` via outbox.
 
 | Variável | Default | Para quê |
 |---|---|---|
-| `DATABASE_URL` | `postgres://wagering:wagering@localhost:55432/wagering` | PostgreSQL |
+| `DATABASE_URL` | `postgres://wagering_app:wagering_app@localhost:55432/wagering` | conexão do serviço: role de menor privilégio criado pelas migrations (sem superuser, sem posse de tabelas, ledger só SELECT/INSERT) |
+| `MIGRATION_DATABASE_URL` | `postgres://wagering:wagering@localhost:55432/wagering` | dono do schema, usado só por `migration:up`/`down` |
 | `SQS_ENDPOINT` | `http://localhost:4566` | LocalStack/SQS |
 | `ROLES` | `api,consumer,publisher,pending-worker` | papéis deste processo |
 | `DB_LOCK_TIMEOUT_MS` / `DB_STATEMENT_TIMEOUT_MS` | `5000` / `10000` | limites por transação (estourou → 503) |
@@ -240,8 +242,10 @@ A lista completa, com validação, está em `src/infrastructure/config/config.ts
 
 - **`/health/ready` responde 503 com `sqs: "The specified queue does not exist."`**: o LocalStack não
   persiste estado, e recriar o container apaga as filas. Rode `bun run sqs:setup` de novo.
-- **Porta 55432 ocupada:** `POSTGRES_HOST_PORT=55433 docker compose up -d` e
-  `DATABASE_URL=postgres://wagering:wagering@localhost:55433/wagering`.
+- **Porta 55432 ocupada:** `POSTGRES_HOST_PORT=55433 docker compose up -d` e troque a porta em
+  `DATABASE_URL` e `MIGRATION_DATABASE_URL`.
+- **`password authentication failed for user "wagering_app"`:** o role do serviço é criado pela migration.
+  Rode `bun run migration:up` antes do `start`.
 - **Ctrl+C / SIGTERM:** o processo para de receber, termina as mensagens em andamento (ou devolve a
   visibilidade delas) e fecha o pool. No Windows, um processo filho criado pelo Bun recebe `kill("SIGTERM")`
   como término imediato, por isso o harness de testes usa IPC lá. O CI valida o SIGTERM real em Linux.

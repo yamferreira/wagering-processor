@@ -5,8 +5,20 @@ import { runMigrations } from "../../src/infrastructure/persistence/migrate";
 /**
  * Test database isolation: one migrated template per test process, cloned into a fresh
  * database per test file (CREATE DATABASE … TEMPLATE). Real PostgreSQL, no mocks.
+ *
+ * Two credentials, as in production: `url`/`sql` use the schema owner (migrations, fixtures and the
+ * deliberate corruption tests); `appUrl` uses the least-privilege runtime role the service runs with.
  */
-const BASE_URL = loadConfig().DATABASE_URL;
+const config = loadConfig();
+const BASE_URL = config.MIGRATION_DATABASE_URL;
+const APP_URL = config.DATABASE_URL;
+
+/** Same database, connected as the runtime role (wagering_app). */
+export function appDatabaseUrl(name: string): string {
+  const url = new URL(APP_URL);
+  url.pathname = `/${name}`;
+  return url.toString();
+}
 const PREFIX = "wagering_test_";
 const TEMPLATE = `${PREFIX}tpl_${process.pid}`;
 
@@ -59,7 +71,10 @@ function ensureTemplate(): Promise<void> {
 
 export interface TestDatabase {
   name: string;
+  /** Schema owner. */
   url: string;
+  /** Runtime role: what the application under test connects with. */
+  appUrl: string;
   /** Raw SQL client (Bun.SQL) for fixtures and assertions. */
   sql: SQL;
   drop(): Promise<void>;
@@ -82,6 +97,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   return {
     name,
     url,
+    appUrl: appDatabaseUrl(name),
     sql,
     async drop() {
       await sql.close();
@@ -110,6 +126,7 @@ export async function createEmptyDatabase(): Promise<TestDatabase> {
   return {
     name,
     url,
+    appUrl: appDatabaseUrl(name),
     sql,
     async drop() {
       await sql.close();
