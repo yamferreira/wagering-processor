@@ -912,6 +912,23 @@ andamento. O primeiro run em Linux passou sem nenhuma correção específica de 
 - **Sem heartbeat de visibilidade:** o processamento de uma mensagem é limitado por `lock_timeout` (5s),
   `statement_timeout` (10s) e até 3 retries internos, bem abaixo do visibility timeout de 30s. Uma
   mensagem que ainda assim passe do timeout é reentregue, e a inbox a deduplica.
+- **`Money.equals` não lança para moedas diferentes** (§6.1): devolve `false`. Igualdade é um predicado;
+  aritmética e comparação de ordem (`add`, `subtract`, `isLessThan`, `isGreaterThan`) lançam
+  `CurrencyMismatchError`. O domínio nunca compara valores de moedas diferentes: `decide()` rejeita
+  `CURRENCY_MISMATCH` antes de qualquer comparação.
+- **Reconciliação com giro acumulado acima de `NUMERIC(20,2)`:** a consulta soma créditos e débitos
+  separadamente como `NUMERIC(20,2)`. Uma wallet cujo total de créditos (ou de débitos) passe de
+  `999999999999999999.99` recebe 500 na reconciliação, embora o saldo seja válido. Exige um giro de 10¹⁸ na
+  mesma wallet, inalcançável na prática. A correção seria somar sem precisão fixa e comparar só o saldo
+  líquido.
+- **Valor do backoff da SQS sem prova direta:** o retry usa `min(base·2ⁿ, cap)` com `ChangeMessageVisibility`.
+  Os testes provam que a mensagem volta e é aplicada uma única vez, mas não medem o atraso calculado.
+- **Validações pela fila provadas no use case compartilhado:** "OPENING não entra pela fila" e a identidade
+  do provedor não têm teste próprio no canal SQS. Ficam provadas pelo use case que HTTP e SQS compartilham
+  (`SubmitWagerTransaction`) e pelo schema do envelope, que reutiliza o schema da HTTP.
+- **Replay de FAILED pela SQS:** a primeira entrega de uma transação que termina FAILED vai para a DLQ
+  (erro permanente). Uma nova mensagem com a mesma Idempotency-Key recebe o replay do FAILED e é confirmada
+  (ack), sem nova cópia na DLQ: a transação já está registrada como FAILED, auditável e contada na métrica.
 
 ## 13. Revisão final independente
 
