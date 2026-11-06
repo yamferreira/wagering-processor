@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { TransientInfrastructureError, TransientReason } from "../../../src/application/errors";
 import { silentLogger } from "../../../src/application/ports/logger";
 import type { SubmitWagerCommand } from "../../../src/application/use-cases/submit-wager-transaction";
 import { WagerTransactionStatus } from "../../../src/domain/wager/kinds";
@@ -196,7 +197,7 @@ describe("concurrent PENDING_REFERENCE workers", () => {
     }
     for (const theBet of arriving) await h.container.submit.execute(theBet, CTX);
 
-    const totals = { PROCESSED: 0, REJECTED: 0, STILL_PENDING: 0, SKIPPED: 0 };
+    const totals = { PROCESSED: 0, REJECTED: 0, FAILED: 0, STILL_PENDING: 0, SKIPPED: 0, RETRY_LATER: 0 };
     const deadline = Date.now() + 30_000;
     const loop = async (worker: Container) => {
       while (Date.now() < deadline) {
@@ -254,5 +255,74 @@ describe("concurrent PENDING_REFERENCE workers", () => {
     expect(after.map((c) => c.id)).toContain(transaction.id);
     for (const claim of after) await workers[1]!.resolvePending.resolve(claim);
     expect((await txRow(h, orphan))?.reference_attempts).toBe(1); // the lost claim was not counted
+  });
+});
+
+describe("PENDING_REFERENCE worker: a failing item does not stop the others", () => {
+  let h: MessagingHarness;
+
+  beforeAll(async () => {
+    h = await createMessagingHarness({ label: "pending-isolation", config: { PENDING_REF_LEASE_MS: 300 } });
+  });
+  afterEach(async () => {
+    h.faults.reset();
+    await assertLedgerInvariant(h.db.sql);
+  });
+  afterAll(async () => {
+    await h.close();
+  });
+
+  /** Two ROLLBACKs on two wallets, both woken up (due now) by their BET: one worker round claims both. */
+  async function twoDueRollbacks() {
+    const wallets = [await h.openWallet("100.00"), await h.openWallet("100.00")];
+    const bets = wallets.map((wallet) => bet(wallet));
+    const rollbacks = wallets.map((wallet, i) => referencing(wallet, "ROLLBACK", bets[i]!));
+    for (const rollback of rollbacks) await h.container.submit.execute(rollback, CTX);
+    for (const theBet of bets) await h.container.submit.execute(theBet, CTX);
+    return { wallets, rollbacks };
+  }
+
+  test("a permanent error is recorded as FAILED for that item and the rest of the batch is applied", async () => {
+    const { wallets, rollbacks } = await twoDueRollbacks();
+    h.faults.throwAt("pending:before-apply", () => new Error("simulated defect"), 1);
+
+    const round = await h.container.resolvePending.runRound(); // must not throw
+    expect(round.claimed).toBe(2);
+    expect(round.resolutions).toMatchObject({ FAILED: 1, PROCESSED: 1 });
+
+    const rows = await Promise.all(rollbacks.map((rollback) => txRow(h, rollback)));
+    const failedIndex = rows.findIndex((row) => row?.status === "FAILED");
+    expect(failedIndex).toBeGreaterThanOrEqual(0);
+    expect(rows[failedIndex]!.failure_code).toBe("INTERNAL_INVARIANT_VIOLATION");
+    expect(rows[1 - failedIndex]!.status).toBe("PROCESSED");
+    expect(await balance(h, wallets[failedIndex]!.id)).toBe("75.00"); // only the BET moved this wallet
+    expect(await balance(h, wallets[1 - failedIndex]!.id)).toBe("100.00"); // BET rolled back
+
+    await Bun.sleep(h.config.PENDING_REF_LEASE_MS + 100);
+    expect((await h.container.resolvePending.runRound()).claimed).toBe(0); // nothing left stuck
+  });
+
+  test("a transient error defers only that item, without spending a retry attempt", async () => {
+    const { wallets, rollbacks } = await twoDueRollbacks();
+    h.faults.throwAt(
+      "pending:before-apply",
+      () => new TransientInfrastructureError(TransientReason.ConnectionFailure, "simulated outage"),
+      1,
+    );
+
+    const round = await h.container.resolvePending.runRound();
+    expect(round.resolutions).toMatchObject({ RETRY_LATER: 1, PROCESSED: 1 });
+    const deferred = (await Promise.all(rollbacks.map((rollback) => txRow(h, rollback)))).find(
+      (row) => row?.status === "PENDING_REFERENCE",
+    );
+    expect(deferred?.reference_attempts).toBe(0);
+
+    // The lease expires and a later round applies it.
+    await waitFor(async () => {
+      await h.container.resolvePending.runRound();
+      const statuses = await Promise.all(rollbacks.map((rollback) => statusOf(h, rollback)));
+      return statuses.every((status) => status === "PROCESSED");
+    }, { description: "deferred item applied", timeoutMs: 10_000, intervalMs: 100 });
+    for (const wallet of wallets) expect(await balance(h, wallet.id)).toBe("100.00");
   });
 });

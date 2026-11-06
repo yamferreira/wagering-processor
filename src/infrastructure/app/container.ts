@@ -140,6 +140,7 @@ export async function buildContainer(config: AppConfig, overrides: ContainerOver
       batchSize: config.PENDING_REF_BATCH_SIZE,
       leaseMs: config.PENDING_REF_LEASE_MS,
       metrics,
+      faults,
       logger: logger.child({ component: "pending-reference-worker" }),
     }),
     publishOutbox: new PublishOutboxBatch({

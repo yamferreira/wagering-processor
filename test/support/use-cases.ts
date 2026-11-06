@@ -46,7 +46,7 @@ export async function createUseCaseHarness(
       supportedCurrencies,
       retryPolicy,
     }),
-    resolvePending: new ResolvePendingReference({ ...deps, retryPolicy, batchSize: 50, leaseMs: 5_000 }),
+    resolvePending: new ResolvePendingReference({ ...deps, retryPolicy, faults, batchSize: 50, leaseMs: 5_000 }),
     getWallet: new GetWallet(persistence.runner),
     getLedger: new GetWalletLedger(persistence.runner),
     getTransaction: new GetWagerTransaction(persistence.runner),

@@ -695,6 +695,12 @@ Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nu
   provider_id = ? AND reference_external_transaction_id = ?` (`wager_tx_pending_by_reference_idx`). O
   dependente é resolvido na próxima rodada do worker (`PENDING_REF_POLL_MS`), em vez de esperar o backoff.
   Isso vale em cascata: um ROLLBACK de um WIN que esperava a BET resolve assim que a BET chega.
+- **Isolamento por item:** um erro num item nunca aborta a rodada nem trava os outros itens do lote.
+  Erro transitório (`TransientInfrastructureError`): o item fica como está e volta quando o lease expira,
+  sem gastar tentativa (`RETRY_LATER`). Qualquer outro erro é permanente: o item vira **FAILED**
+  (`INTERNAL_INVARIANT_VIOLATION`, A16) numa transação própria, com log `error` e métrica, e os seus
+  dependentes são acordados. Sem isso, um item com defeito seria reclamado de novo a cada lease e, por
+  estar sempre primeiro na ordem, deixaria o resto do lote preso.
 - **Wake-up × lease:** um wake-up pode adiantar um item que está com lease. É seguro: o processamento
   por item recheca o status sob o lock da wallet, e no máximo um worker aplica o efeito.
 - **REFUND e ROLLBACK pendentes sobre a mesma BET:** são resolvidos em sequência sob o lock da wallet. O
@@ -702,7 +708,8 @@ Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nu
   índice único parcial.
 - **Testes:** dependente chegando antes da referência por HTTP e por SQS, a cascata, o esgotamento, dois
   workers concorrentes sobre 40 pendências (20 PROCESSED e 20 REJECTED, exatamente um evento terminal por
-  transação) e a expiração do lease.
+  transação) e a expiração do lease, além do isolamento: erro permanente → FAILED só naquele item e o
+  resto do lote aplicado; erro transitório → só aquele item adiado, sem gastar tentativa.
 
 ### 9.5 Múltiplas instâncias, crash e restart (T20, §5, §8, §10, §11, §13)
 
