@@ -87,9 +87,9 @@ Todas as suítes usam **PostgreSQL e LocalStack reais** (o `docker compose` prec
 |---|---|---|---|
 | `bun run typecheck` | `tsc --noEmit` (strict) | ~5 s | ~1 s |
 | `bun run test:unit` | 245 testes de domínio e aplicação | ~0,3 s | ~0,1 s |
-| `bun run test:integration` | 179 testes: schema/constraints, repositórios, use cases, HTTP, SQS, inbox/DLQ, outbox, worker, observabilidade | ~90 s | ~71 s |
+| `bun run test:integration` | 189 testes: schema/constraints (incl. role de runtime), repositórios, use cases, HTTP, SQS, inbox/DLQ, outbox, worker, observabilidade | ~90 s | ~80 s |
 | `bun test` | unidade + integração | ~90 s | — |
-| `bun run test:concurrency` | 17 testes com paralelismo real: 50× a mesma aposta, §8, hot wallet, 50 wallets, **3 processos reais**, crash depois do commit e antes do ack, SIGKILL + restart | ~90 s | ~51 s |
+| `bun run test:concurrency` | 17 testes com paralelismo real: 50× a mesma aposta, §8, hot wallet, 50 wallets, **3 processos reais**, crash depois do commit e antes do ack, SIGKILL + restart | ~90 s | ~48–57 s |
 | `bun run test:all` | `bun test` e depois `test:concurrency` | ~3 min | — |
 | `bun run audit:money` | auditoria estática: nenhum `number`/float para dinheiro em `src`, testes e scripts | <1 s | <1 s |
 | `bun run test:load` | carga: 1 × 3 instâncias, 8 e 64 clientes, relatório em `reports/` (ver `docs/LOAD-TEST.md`) | ~3 min | ~3 min (job `load`, informativo) |
