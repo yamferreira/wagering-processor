@@ -274,8 +274,9 @@ A lista completa, com validação, está em `src/infrastructure/config/config.ts
 
 ## Uso de IA
 
-A IA foi usada como assistente de desenvolvimento e de revisão. As decisões de arquitetura e as regras de
-negócio foram validadas por testes contra PostgreSQL e SQS reais (LocalStack), por testes de concorrência
+As decisões de arquitetura, as interpretações da especificação e os trade-offs foram definidos e revisados
+por mim. A IA foi usada como assistente de desenvolvimento e de revisão. As decisões de arquitetura e as
+regras de negócio foram validadas por testes contra PostgreSQL e SQS reais (LocalStack), por testes de concorrência
 com múltiplos processos, pelo CI em Linux e por uma revisão independente (`docs/ARCHITECTURE.md`, seção 13).
 
 ## Estrutura
