@@ -634,7 +634,11 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
   devolve as restantes com `ChangeMessageVisibility(0)`. **O long poll aberto não é abortado:** abortar só
   cancela o lado do cliente, e o broker entregaria a mensagem devolvida a esse poll "morto", deixando-a
   invisível por um visibility timeout inteiro. Esse bug foi pego pelo teste com processo real e corrigido:
-  o poll termina sozinho em até `SQS_WAIT_TIME_S` e o que ele trouxer é devolvido na hora. Uma mensagem
+  o poll termina sozinho em até `SQS_WAIT_TIME_S` e o que ele trouxer é devolvido na hora. O `stop()`
+  espera o **loop inteiro** do consumidor, não só o poll: assim essa devolução termina antes de o processo
+  sair (teste com processo real: mensagem enviada durante o shutdown volta a ficar visível em segundos, não
+  depois dos 30 s do visibility timeout). As esperas internas do loop (capacidade cheia, backoff de
+  receive) são interrompidas pelo `stop()`. Uma mensagem
   devolvida cuja transação ainda termina durante o fechamento do pool não gera duplicata: a reentrega cai
   na inbox. O `main.ts` tem um deadline duro (`max(grace, wait) + 10s`) para nunca travar o término.
 - **Sinais no Windows:** o Bun entrega `kill("SIGTERM")` a um processo filho como término imediato no

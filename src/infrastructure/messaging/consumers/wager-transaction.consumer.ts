@@ -54,6 +54,11 @@ export class WagerTransactionConsumer {
   private running = false;
   private loop: Promise<void> | undefined;
   private currentPoll: Promise<ReceivedMessage[]> | undefined;
+  /** Resolved by stop(): interrupts the loop's waits (capacity, receive backoff). */
+  private stopSignal: Promise<void> = Promise.resolve();
+  private signalStop: () => void = () => {};
+  /** Messages the loop received after stop() and handed straight back. */
+  private handedBack = 0;
   private readonly inFlight = new Map<string, { message: ReceivedMessage; done: Promise<void>; released: boolean }>();
   private readonly options: WagerConsumerOptions;
 
@@ -71,25 +76,36 @@ export class WagerTransactionConsumer {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.handedBack = 0;
+    this.stopSignal = new Promise<void>((resolve) => {
+      this.signalStop = resolve;
+    });
     this.loop = this.run();
   }
 
   async stop(): Promise<{ completed: number; released: number }> {
     if (!this.running) return { completed: 0, released: 0 };
     this.running = false;
+    this.signalStop();
     // The open long poll is NOT aborted: aborting only cancels the client side, while the broker
     // keeps the ReceiveMessage open and would deliver a released message to this dead poll (making
     // it invisible for a full visibility timeout). It ends by itself within waitTimeSeconds, and
-    // whatever it returns is handed straight back (see run()). In-flight work gets the grace period
-    // concurrently, so stopping takes at most max(waitTimeSeconds, shutdownGraceMs).
+    // whatever it returns is handed straight back by run(). Waiting for the whole loop (not just the
+    // poll) guarantees that hand-back happened before stop() resolves and the process exits.
+    // In-flight work gets the grace period concurrently, so stopping takes at most
+    // max(waitTimeSeconds, shutdownGraceMs).
     const pending = [...this.inFlight.values()];
-    const grace = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), this.options.shutdownGraceMs));
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const grace = new Promise<"timeout">((resolve) => {
+      graceTimer = setTimeout(() => resolve("timeout"), this.options.shutdownGraceMs);
+    });
     await Promise.all([
-      this.currentPoll?.catch(() => undefined),
+      this.loop?.catch(() => undefined),
       Promise.race([Promise.allSettled(pending.map((entry) => entry.done)), grace]),
     ]);
+    clearTimeout(graceTimer);
 
-    let released = 0;
+    let released = this.handedBack;
     for (const entry of this.inFlight.values()) {
       entry.released = true;
       released++;
@@ -97,8 +113,9 @@ export class WagerTransactionConsumer {
         .changeVisibility(entry.message.receiptHandle, 0)
         .catch((error) => this.deps.logger.warn({ ...errorFields(error) }, "could not release message"));
     }
-    this.deps.logger.info({ completed: pending.length - released, released }, "consumer stopped");
-    return { completed: pending.length - released, released };
+    const completed = pending.length - (released - this.handedBack);
+    this.deps.logger.info({ completed, released }, "consumer stopped");
+    return { completed, released };
   }
 
   private async run(): Promise<void> {
@@ -106,7 +123,7 @@ export class WagerTransactionConsumer {
     while (this.running) {
       const capacity = this.options.concurrency - this.inFlight.size;
       if (capacity <= 0) {
-        await Promise.race([...this.inFlight.values()].map((entry) => entry.done));
+        await Promise.race([...[...this.inFlight.values()].map((entry) => entry.done), this.stopSignal]);
         continue;
       }
       let batch: ReceivedMessage[];
@@ -119,13 +136,14 @@ export class WagerTransactionConsumer {
         pollFailures++;
         const delay = Math.min(250 * 2 ** pollFailures, 10_000);
         this.deps.logger.warn({ ...errorFields(error), delayMs: delay }, "sqs receive failed; backing off");
-        await sleep(delay);
+        await this.pause(delay);
         continue;
       } finally {
         this.currentPoll = undefined;
       }
       if (!this.running) {
-        // Received during shutdown: hand them straight back.
+        // Received during shutdown: hand them straight back (stop() waits for this).
+        this.handedBack += batch.length;
         await Promise.all(
           batch.map((m) =>
             this.deps.input
@@ -245,9 +263,16 @@ export class WagerTransactionConsumer {
     });
     await this.deps.input.delete(message.receiptHandle);
   }
-}
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  /** Sleeps for `ms`, or less if stop() is called meanwhile. */
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      void this.stopSignal.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
 }
 

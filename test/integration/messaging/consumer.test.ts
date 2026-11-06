@@ -361,3 +361,49 @@ describe("graceful shutdown of a consumer process (real child process)", () => {
     expect(await balance(h, w.id)).toBe("80.00");
   });
 });
+
+describe("graceful shutdown with an open long poll (real child process)", () => {
+  // Own harness: the child must be the only consumer of these queues.
+  let h: MessagingHarness;
+
+  beforeAll(async () => {
+    h = await createMessagingHarness({ label: "shutdown-poll", queues: { visibilityTimeoutSeconds: 30 } });
+  });
+  afterEach(async () => {
+    await killAllInstances();
+    await assertLedgerInvariant(h.db.sql);
+  });
+  afterAll(async () => {
+    await killAllInstances();
+    await h.close();
+  });
+
+  test("SIGTERM while the long poll is open: a message it receives during shutdown is handed back right away", async () => {
+    const w = await h.openWallet("100.00");
+    const child = await spawnInstance({
+      name: "consumer-open-poll",
+      config: { ...h.config, ROLES: ["consumer"], LOG_LEVEL: "info", SQS_WAIT_TIME_S: 10, SHUTDOWN_GRACE_MS: 1_000 },
+    });
+    await Bun.sleep(1_500); // the consumer is now blocked in an open 10 s long poll
+
+    const stopping = child.stop(60_000);
+    await Bun.sleep(300);
+    const command = wagerCommand(w, { money: { amount: "20.00", currency: "BRL" } });
+    await sendEnvelope(h.queues, wagerEnvelope(command)); // delivered to the poll of the stopping process
+    expect(await stopping).toBe(0);
+
+    // Not processed by the stopping process, and handed back (ChangeMessageVisibility 0) before it exited.
+    expect(await txRow(h, command.providerId, command.externalTransactionId)).toBeUndefined();
+    expect(jsonLogs(child).find((line) => line.msg === "consumer stopped")?.released).toBe(1);
+    await waitFor(async () => (await h.queues.input.approximateDepth()).visible === 1, {
+      description: "visible again before the 30 s visibility timeout",
+      timeoutMs: 5_000,
+    });
+
+    await h.start();
+    const row = await waitFor(() => txRow(h, command.providerId, command.externalTransactionId), { description: "applied" });
+    expect(row.status).toBe("PROCESSED");
+    await waitFor(() => queueIsEmpty(h), { description: "acked" });
+    expect(await balance(h, w.id)).toBe("80.00");
+  });
+});
