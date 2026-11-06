@@ -4,6 +4,32 @@
 > (`§n`) que atende. As interpretações da especificação (`A1…A32`)
 > estão no [Apêndice A](#apêndice-a--interpretações-da-especificação-a1a32). Setup e comandos: `README.md`.
 
+## Resumo executivo
+
+Serviço que processa apostas (BET, WIN, LOSS, REFUND, ROLLBACK) recebidas por HTTP e por SQS, com saldo
+por wallet, ledger imutável e várias instâncias concorrentes. Princípio: **a aplicação decide, o PostgreSQL
+impede o que não pode acontecer.** Unicidade, imutabilidade, saldo ≥ 0 e saldo ⇔ ledger estão no schema;
+a ordem e a deduplicação do broker são só otimização.
+
+| Tema | Decisão | Onde a garantia está | Seção deste documento |
+|---|---|---|---|
+| Dinheiro | `Money` em centavos (`bigint`), escala 2, contrato `{"amount":"25.00","currency":"BRL"}`; nenhum `number` | `NUMERIC(20,2)` + `CHAR(3)`; `audit:money` no CI | [4.1](#41-money) |
+| Concorrência | lock pessimista por wallet (`SELECT … FOR UPDATE`) + `UPDATE … WHERE version = ?`; wallets diferentes em paralelo | `CHECK (balance >= 0)`, `UNIQUE (wallet_id, wallet_version)` | [6.1](#61-estratégia-8) |
+| Saldo ⇔ ledger | `debit`/`credit` geram o lançamento no mesmo passo; ledger append-only | triggers: append-only, encadeamento, saldo = último `balance_after` (deferred), lançamento coerente com a transação | [5.2](#52-garantias-no-schema-5-6) |
+| Idempotência | `Idempotency-Key` obrigatório; `payloadHash` = SHA-256 do JSON canônico; replay com status e corpo originais | `UNIQUE (idempotency_key)`, `UNIQUE (provider_id, external_transaction_id)` | [7](#7-idempotência) |
+| Regras de negócio | `decide()` puro + `applyDecision()`; uma BET é revertida uma única vez (REFUND ou ROLLBACK) | índice único parcial de reversão; FKs compostas | [4.5](#45-regras-de-negócio-decide--applydecision-7) |
+| Fora de ordem | PENDING_REFERENCE com backoff e limite; esperar uma referência em andamento não gasta tentativas; wake-up quando a referência fica terminal | worker com `SKIP LOCKED` + lease, erro isolado por item | [9.4](#94-worker-de-pending_reference-71-a7-a28) |
+| Mensageria | inbox na mesma transação, ack só após o commit, DLQ para erro permanente; Transactional Outbox | PK `(consumer_name, message_id)`; outbox com `FOR UPDATE SKIP LOCKED` e `eventId` como chave de deduplicação | [9](#9-mensageria-inbox-outbox-pending_reference) |
+| Várias instâncias | processos sem estado em memória, coordenados pelo banco; `ROLES` separa API, consumidor, publisher e worker | testes com 3 processos reais, crash depois do commit e restart | [9.5](#95-múltiplas-instâncias-crash-e-restart-5-8-10-11-13) |
+| Menor privilégio | o runtime conecta como `wagering_app`; as migrations, como dono do schema | `UPDATE/DELETE` no ledger e `DISABLE TRIGGER` → `42501` | [5.2](#52-garantias-no-schema-5-6) |
+| HTTP | 201 · 200 (replay) · 202 · 400 · 404 · 409 · 422 (`failureCode`) · 500 (FAILED) · 503; formato de erro único | — | [8.2](#82-mapa-de-status-consistente-em-todos-os-endpoints) |
+| Observabilidade | logs JSON (pino) com ids e sem valores; Prometheus em `/metrics`; `/health/live` e `/health/ready` | — | [11](#11-observabilidade) |
+| Autenticação | não implementada (não pontua); `ProviderIdentityPort` + `AuthGuard` no-op e desenho com Keycloak | — | [10](#10-autenticação) |
+
+Diagramas: [fluxo do submit](#diagrama-fluxo-do-submit) e [máquina de estados da transação](#diagrama-máquina-de-estados).
+Interpretações da especificação: [Apêndice A](#apêndice-a--interpretações-da-especificação-a1a32). Trade-offs e limitações:
+[seção 12](#12-trade-offs-e-limitações).
+
 ## 1. Visão geral
 
 Serviço financeiro que processa transações de apostas (BET, WIN, LOSS, REFUND, ROLLBACK) recebidas por
@@ -151,17 +177,27 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
 
 ### 4.4 WagerTransaction: máquina de estados
 
+#### Diagrama: máquina de estados
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> PENDING : create (em memória)
+    PENDING --> PROCESSED : regra aplicada
+    PENDING --> REJECTED : regra de negócio (failureCode)
+    PENDING --> FAILED : erro interno permanente
+    PENDING --> PENDING_REFERENCE : referência ausente ou pendente
+    PENDING_REFERENCE --> PENDING_REFERENCE : reagendada (backoff)
+    PENDING_REFERENCE --> PROCESSED : referência resolvida
+    PENDING_REFERENCE --> REJECTED : regra, REFERENCE_NOT_PROCESSED ou REFERENCE_NOT_FOUND
+    PENDING_REFERENCE --> FAILED : erro interno permanente
+    PROCESSED --> [*]
+    REJECTED --> [*]
+    FAILED --> [*]
 ```
-            ┌──────────────► PROCESSED  (terminal)
-            │
- PENDING ───┼──────────────► REJECTED   (terminal)
-   │        │
-   │        └──────────────► FAILED     (terminal)
-   │
-   └──► PENDING_REFERENCE ──► PROCESSED | REJECTED | FAILED
-              │   ▲
-              └───┘ reagendamento (attempts + 1)
-```
+
+PROCESSED, REJECTED e FAILED são terminais (trigger `wager_tx_guard_update` no banco). O reagendamento
+gasta uma tentativa só quando a referência não existe (§4.5).
 
 - Tabela explícita em `VALID_TRANSITIONS` (`src/domain/wager/kinds.ts`). Sair de um estado
   terminal lança `InvalidTransactionStateError`, que é erro de programação e não caminho de negócio.
@@ -171,7 +207,8 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
 - **`resultingBalance`** guarda o saldo observado na decisão (pós-movimento em PROCESSED,
   saldo inalterado em REJECTED). É o que o replay idempotente devolve (§7).
 - **`referenceAttempts` / `nextReferenceAttemptAt`:** controle do worker de PENDING_REFERENCE.
-  A primeira marcação agenda sem contar tentativa; cada reagendamento conta uma.
+  A primeira marcação agenda sem contar tentativa; cada reagendamento com a referência ausente conta
+  uma, e a espera por uma referência que existe mas está pendente não conta.
 - **Validação em `create` (A2, A5, A8):**
   - OPENING é proibido (existe `createOpening`, interno);
   - REFUND e ROLLBACK exigem referência, BET não pode ter;
@@ -455,6 +492,39 @@ A garantia vem do banco (`UNIQUE(idempotency_key)` e `UNIQUE(provider_id, extern
 §5.1). Essa função só interpreta a colisão.
 
 ### 7.3 Fluxo de `SubmitWagerTransaction`
+
+#### Diagrama: fluxo do submit
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Provedor
+    participant E as API ou consumidor SQS
+    participant U as SubmitWagerTransaction
+    participant DB as PostgreSQL
+    participant W as Publisher da outbox
+    participant Q as wagering-events.fifo
+    P->>E: POST /wagering/transactions ou mensagem SQS
+    E->>U: comando validado (Money estrito, payloadHash)
+    U->>DB: fast path sem lock - a key ou o external id já existem?
+    DB-->>U: não existem
+    rect rgba(127, 127, 127, 0.12)
+    Note over U,DB: uma única transação SQL
+    U->>DB: BEGIN e SELECT wallet FOR UPDATE (lock da linha)
+    U->>DB: re-checagem da idempotência sob o lock
+    U->>DB: resolução da referência (providerId, referenceExternalTransactionId)
+    U->>U: decide() e applyDecision(), funções puras
+    U->>DB: INSERT da transação e do lançamento no ledger
+    U->>DB: UPDATE wallets WHERE version = esperada
+    U->>DB: INSERT na outbox (e na inbox, se veio pela SQS)
+    U->>DB: COMMIT (triggers deferred conferem saldo e ledger)
+    end
+    U-->>E: resultado
+    E-->>P: 201, 202 ou 422 (o ack da SQS vem só depois do commit)
+    W->>DB: SELECT outbox FOR UPDATE SKIP LOCKED (lote)
+    W->>Q: SendMessageBatch (MessageDeduplicationId = eventId)
+    W->>DB: marca como publicado ou reagenda com backoff
+```
 
 O mesmo use case atende HTTP e SQS (§10):
 
