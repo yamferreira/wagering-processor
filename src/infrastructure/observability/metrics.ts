@@ -31,6 +31,7 @@ export class PromMetrics implements Metrics {
   private readonly processing: Histogram<"channel">;
   private readonly published: Counter;
   private readonly divergences: Counter;
+  private readonly unknownWallets: Counter<"consumer">;
 
   constructor(sources?: MetricsSources, options: { defaultMetrics?: boolean } = {}) {
     const registers = [this.registry];
@@ -96,6 +97,12 @@ export class PromMetrics implements Metrics {
       help: "Outbox messages accepted by the broker",
       registers,
     });
+    this.unknownWallets = new Counter({
+      name: "unknown_wallet_messages_total",
+      help: "SQS messages for a wallet that does not exist: recorded in the inbox and acknowledged (A9)",
+      labelNames: ["consumer"],
+      registers,
+    });
     this.divergences = new Counter({
       name: "reconciliation_divergences_total",
       help: "Reconciliations where the stored balance differs from the ledger",
@@ -142,6 +149,9 @@ export class PromMetrics implements Metrics {
   }
   inboxDuplicate(consumer: string): void {
     this.inboxDuplicates.inc({ consumer });
+  }
+  unknownWalletMessage(consumer: string): void {
+    this.unknownWallets.inc({ consumer });
   }
   retry(component: RetryComponent, reason: string): void {
     this.retries.inc({ component, reason });

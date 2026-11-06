@@ -106,6 +106,7 @@ export class SqsQueue {
           MessageBody: message.body,
           MessageGroupId: message.groupId,
           MessageDeduplicationId: message.deduplicationId,
+          ...(message.attributes ? { MessageAttributes: toMessageAttributes(message.attributes) } : {}),
         })),
       }),
     );

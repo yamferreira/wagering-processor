@@ -63,6 +63,7 @@ export interface WagerTransactionRepository {
 export interface PendingReferenceClaim {
   id: string;
   walletId: string;
+  providerId: string;
 }
 
 export interface OutboxLag {

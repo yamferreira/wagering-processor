@@ -85,6 +85,7 @@ export class HandleWagerMessage {
       }
       if (error instanceof NotFoundError && error.resource === "WALLET") {
         await this.recordTerminal(message);
+        (this.deps.metrics ?? noMetrics).unknownWalletMessage(this.deps.consumerName);
         return { type: "WALLET_NOT_FOUND" };
       }
       throw error;

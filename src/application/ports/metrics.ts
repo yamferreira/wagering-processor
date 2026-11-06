@@ -14,6 +14,8 @@ export interface Metrics {
   idempotencyConflict(reason: string): void;
   /** Same (consumerName, messageId) delivered again and ignored. */
   inboxDuplicate(consumer: string): void;
+  /** Message for a wallet that does not exist (A9): inboxed and acked without a transaction. */
+  unknownWalletMessage(consumer: string): void;
   retry(component: RetryComponent, reason: string): void;
   deadLettered(reason: string): void;
   /** Time spent waiting for the wallet row lock (SELECT … FOR UPDATE). */
@@ -29,6 +31,7 @@ export const noMetrics: Metrics = {
   idempotentReplay() {},
   idempotencyConflict() {},
   inboxDuplicate() {},
+  unknownWalletMessage() {},
   retry() {},
   deadLettered() {},
   lockWait() {},

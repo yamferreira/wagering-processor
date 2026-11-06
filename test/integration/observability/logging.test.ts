@@ -130,7 +130,12 @@ describe("structured logging", () => {
       txStatus: "PROCESSED",
     });
     expect(typeof processed.transactionId).toBe("string");
-    expect(resolved).toMatchObject({ transactionId: rollbackId, walletId: wallet.id, resolution: "PROCESSED" });
+    expect(resolved).toMatchObject({
+      transactionId: rollbackId,
+      walletId: wallet.id,
+      providerId: rollback.providerId,
+      resolution: "PROCESSED",
+    });
 
     // No financial values anywhere in the raw output (no amount, balance or payload).
     const everything = capture.raw.join("\n");

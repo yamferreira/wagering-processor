@@ -71,7 +71,7 @@ export class ResolvePendingReference {
     };
     const log = this.deps.logger ?? silentLogger;
     for (const claim of claims) {
-      const fields = { transactionId: claim.id, walletId: claim.walletId, correlationId: claim.id };
+      const fields = { transactionId: claim.id, walletId: claim.walletId, providerId: claim.providerId, correlationId: claim.id };
       let resolution: PendingResolution;
       try {
         resolution = await this.resolve(claim);

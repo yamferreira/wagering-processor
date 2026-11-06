@@ -145,7 +145,7 @@ class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
 
   async leaseDuePendingReferences(now: Date, leaseUntil: Date, limit: number): Promise<PendingReferenceClaim[]> {
     // Served by wager_tx_pending_reference_due_idx (partial on status = PENDING_REFERENCE).
-    const rows = await this.em.execute<{ id: string; wallet_id: string }[]>(
+    const rows = await this.em.execute<{ id: string; wallet_id: string; provider_id: string }[]>(
       `UPDATE wager_transactions t
           SET next_reference_attempt_at = ?, updated_at = ?
          FROM (SELECT id FROM wager_transactions
@@ -154,10 +154,10 @@ class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
                 LIMIT ?
                 FOR UPDATE SKIP LOCKED) due
         WHERE t.id = due.id
-        RETURNING t.id, t.wallet_id`,
+        RETURNING t.id, t.wallet_id, t.provider_id`,
       [leaseUntil, now, now, limit],
     );
-    return rows.map((row) => ({ id: row.id, walletId: row.wallet_id }));
+    return rows.map((row) => ({ id: row.id, walletId: row.wallet_id, providerId: row.provider_id }));
   }
 
   async wakeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number> {

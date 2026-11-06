@@ -682,7 +682,8 @@ COMMIT
   cobrem os dois pontos (`outbox:after-claim-before-publish` e `outbox:after-publish-before-mark`).
 - **SQS indisponível:** a falha vira `scheduleRetry` dentro da mesma transação (`attempts` cresce,
   `next_attempt_at` segue 1s→60s com jitter de até −20%) e nada se perde. Sem limite de tentativas (A29).
-- **Destino:** corpo = envelope `IntegrationEvent.toJSON()`; atributo `eventType`;
+- **Destino:** corpo = envelope `IntegrationEvent.toJSON()`; atributo de mensagem `eventType` em todo
+  evento (testado), para o consumidor filtrar sem abrir o corpo;
   `MessageGroupId = aggregateId` (wallet para `WalletBalanceChanged`, transação para os eventos de
   transação). A ordem entre lotes/publishers não é garantida: consumidores usam `walletVersion` e `eventId`.
 - **Loop:** `PollingWorker` repete imediatamente enquanto o lote vem cheio e espera `OUTBOX_POLL_MS` quando
@@ -803,8 +804,9 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
   - SQS: cada mensagem roda no seu contexto com `sqsMessageId`, `receiveCount`, `messageId` (do envelope),
     `correlationId` (do envelope, ou o `messageId`), `walletId`, `providerId` e, depois do use case,
     `transactionId`. Linhas `message processed` / `transient failure…` / `message moved to the DLQ`.
-  - Worker: `pending reference resolved` com `transactionId`, `walletId` e `resolution` (PROCESSED/REJECTED;
-    as reavaliações que continuam pendentes ficam em debug).
+  - Worker: `pending reference resolved` com `transactionId`, `walletId`, `providerId` e `resolution`
+    (PROCESSED/REJECTED; as reavaliações que continuam pendentes ficam em debug). Um item com erro gera
+    `pending reference failed permanently…` (error) ou `…deferred after a transient failure` (warn).
 - **Sem dados sensíveis:** o código registra só identificadores e resultados. Como rede de segurança, o
   `redact` do pino censura `amount`, `balance`, `money`, `initialBalance`, `resultingBalance`,
   `storedBalance`, `calculatedBalance`, `difference`, `balanceBefore`, `balanceAfter`, `payload`, `body` e
@@ -833,6 +835,7 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
 | Outbox lag | gauges `outbox_pending` e `outbox_lag_seconds` + `outbox_published_total` | pendentes e idade da mais antiga lidos do PostgreSQL no scrape (estado global) |
 | Latência de processamento | histograma `wagering_processing_duration_seconds{channel}` | submissão inteira (HTTP e SQS) e resolução no worker |
 | Divergência de reconciliação | `reconciliation_divergences_total` | §7.4 |
+| Wallet inexistente pela SQS (A9) | `unknown_wallet_messages_total{consumer}` | mensagem registrada na inbox e confirmada sem transação |
 
 Também entram as métricas padrão de processo (`collectDefaultMetrics`: CPU, memória, event loop lag).
 Os gauges globais têm timeout de 2s: com o banco ou a fila fora do ar, o scrape não trava e o gauge mantém
@@ -941,7 +944,7 @@ Pontos em que o enunciado do desafio é ambíguo, com a interpretação adotada.
 | A6 | Liquidação × reversão | WIN de BET já revertida → `REFERENCE_ALREADY_REVERSED`. REFUND/ROLLBACK de BET que já tem WIN é **permitido** (risco documentado em §4.5: o provedor deve reverter o WIN antes). |
 | A7 | Referência não terminal ou falha | Referência em PENDING_REFERENCE → o dependente também espera, **sem gastar tentativas**, até a referência ficar terminal. Referência REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`. |
 | A8 | Payload estruturalmente inválido | 400 sem persistir: BET com referência, autorreferência, kind OPENING, providerId reservado `internal`. |
-| A9 | Wallet inexistente | HTTP 404 `WALLET_NOT_FOUND` sem consumir a key. Na SQS: erro de negócio terminal (inbox + ack + métrica). |
+| A9 | Wallet inexistente | HTTP 404 `WALLET_NOT_FOUND` sem consumir a key. Na SQS: erro de negócio terminal (inbox + ack + `unknown_wallet_messages_total`). |
 | A10 | O que vira REJECTED | Toda rejeição de regra após a wallet ser encontrada. Consome a key, grava o saldo observado e não gera lançamento. |
 | A11 | Status do replay | Status original: 200 PROCESSED, 422 REJECTED, 202 PENDING_REFERENCE, mesmo corpo e `idempotentReplay: true`. |
 | A12 | Replay após mudança de estado | Devolve o estado persistido atual; depois de terminal, é imutável (trigger). |

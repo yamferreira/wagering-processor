@@ -94,6 +94,8 @@ describe("GET /metrics", () => {
       return row.n === 1;
     }, { description: "queued BET applied after one retry", timeoutMs: 20_000 });
     await sendEnvelope(h.queues, viaQueue, { groupId: "dup" });
+    // A message for a wallet that does not exist (A9): inboxed, acked and counted.
+    await sendEnvelope(h.queues, wagerEnvelope(wagerCommand({ id: crypto.randomUUID(), playerId: "nobody" })), { groupId: "ghost" });
 
     // Lock timeout: hold the wallet row longer than DB_LOCK_TIMEOUT_MS (300 ms).
     const holder = await h.db.sql.reserve();
@@ -111,6 +113,7 @@ describe("GET /metrics", () => {
       const ready =
         value(scraped.samples, "wagering_transactions_total", { kind: "ROLLBACK", status: "PROCESSED", channel: "WORKER" }) >= 1 &&
         value(scraped.samples, "inbox_duplicates_total") >= 1 &&
+        value(scraped.samples, "unknown_wallet_messages_total") >= 1 &&
         value(scraped.samples, "outbox_pending") === 0;
       return ready ? scraped : undefined;
     }, { description: "metrics settled", timeoutMs: 20_000, intervalMs: 250 });
@@ -130,6 +133,7 @@ describe("GET /metrics", () => {
       "outbox_published_total",
       "wagering_processing_duration_seconds",
       "reconciliation_divergences_total",
+      "unknown_wallet_messages_total",
     ]) {
       expect(text).toContain(`# TYPE ${name} `);
     }
@@ -143,6 +147,7 @@ describe("GET /metrics", () => {
     expect(value(samples, "idempotent_replays_total", { channel: "HTTP" })).toBe(1);
     expect(value(samples, "idempotency_conflicts_total", { reason: "IDEMPOTENCY_KEY_REUSED" })).toBe(1);
     expect(value(samples, "inbox_duplicates_total")).toBe(1);
+    expect(value(samples, "unknown_wallet_messages_total", { consumer: "wager-transactions-consumer" })).toBe(1);
     expect(value(samples, "retries_total", { component: "consumer", reason: "CONNECTION_FAILURE" })).toBe(1);
     expect(value(samples, "dlq_messages_total", { reason: "INVALID_ENVELOPE" })).toBe(1);
     expect(value(samples, "dlq_depth")).toBeGreaterThanOrEqual(1);
