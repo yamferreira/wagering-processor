@@ -158,7 +158,7 @@ curl -s -X POST $API/wagering/transactions \
 | Mesma key e mesmo payload (replay) | `200` | o mesmo corpo, com `"idempotentReplay":true` |
 | Mesma key, payload diferente | `409` | `{"error":{"code":"IDEMPOTENCY_KEY_REUSED","existingTransactionId":"…"}}` |
 | Referência ainda não chegou (ex.: ROLLBACK antes da BET) | `202` | `{"status":"PENDING_REFERENCE","balance":null,…}` |
-| Regra de negócio (ex.: saldo insuficiente) | `422` | `{"error":{"code":"INSUFFICIENT_FUNDS","providerAction":"GIVE_UP","status":"REJECTED","balance":{…},…}}` |
+| Regra de negócio (ex.: saldo insuficiente) | `422` | `{"error":{"code":"INSUFFICIENT_FUNDS","failureCode":"INSUFFICIENT_FUNDS","providerAction":"GIVE_UP","status":"REJECTED","balance":{…},…}}` |
 | Payload inválido (ex.: `"amount":"25"`) | `400` | `{"error":{"code":"INVALID_MONEY","message":"…exactly 2 decimal places"}}` |
 | Falha transitória (banco fora, `lock_timeout`) | `503` + `Retry-After` | `{"error":{"code":"TRANSIENT_INFRASTRUCTURE_ERROR","reason":"LOCK_TIMEOUT"}}` → reenviar com a mesma key |
 

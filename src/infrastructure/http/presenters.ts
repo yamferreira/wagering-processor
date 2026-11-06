@@ -2,7 +2,7 @@ import type { ReconciliationReport } from "../../application/use-cases/reconcile
 import type { SubmitResult } from "../../application/use-cases/submit-wager-transaction";
 import type { WalletLedgerEntry } from "../../domain/ledger/wallet-ledger-entry";
 import type { MoneyProps } from "../../domain/money/money";
-import { FAILURE_CODE_CATALOG } from "../../domain/wager/failure-code";
+import { FAILURE_CODE_CATALOG, FailureCode } from "../../domain/wager/failure-code";
 import { WagerTransactionStatus as Status } from "../../domain/wager/kinds";
 import type { WagerTransaction } from "../../domain/wager/wager-transaction";
 import type { Wallet } from "../../domain/wallet/wallet";
@@ -85,6 +85,7 @@ export function presentSubmitResult(result: SubmitResult): HttpResponse {
         body: {
           error: {
             code,
+            failureCode: code,
             message: FAILURE_CODE_CATALOG[code].description,
             providerAction: FAILURE_CODE_CATALOG[code].providerAction,
             transactionId: tx.id,
@@ -96,18 +97,23 @@ export function presentSubmitResult(result: SubmitResult): HttpResponse {
       };
     }
     default:
-      return {
-        status: 500,
-        body: {
-          error: {
-            code: "INTERNAL_ERROR",
-            message: "The transaction failed permanently and was recorded as FAILED",
-            transactionId: tx.id,
-            status: tx.status,
-            failureCode: tx.failureCode ?? null,
-            idempotentReplay: replay,
-          },
-        },
-      };
+      return { status: 500, body: failedTransactionBody(tx.id, tx.failureCode ?? FailureCode.InternalInvariantViolation, replay) };
   }
+}
+
+/**
+ * Body of a transaction recorded as FAILED (A16). The first response and every replay use it, so they
+ * differ only in `idempotentReplay`.
+ */
+export function failedTransactionBody(transactionId: string, failureCode: FailureCode, replay: boolean) {
+  return {
+    error: {
+      code: "INTERNAL_ERROR",
+      message: "The transaction failed permanently and was recorded as FAILED",
+      transactionId,
+      status: Status.Failed,
+      failureCode,
+      idempotentReplay: replay,
+    },
+  };
 }

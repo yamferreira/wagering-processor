@@ -542,7 +542,10 @@ pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código
 corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 
 **Formato único de erro:** `{ "error": { "code", "message", ...detalhes } }`. Na 422 os detalhes são
-`providerAction`, `transactionId`, `status`, `balance` (saldo observado) e `idempotentReplay`.
+`failureCode` (igual a `code`, o mesmo nome de campo do GET, da 500 e do evento `WagerTransactionRejected`),
+`providerAction`, `transactionId`, `status`, `balance` (saldo observado) e `idempotentReplay`. Na 500 de uma
+transação gravada como FAILED: `transactionId`, `status: FAILED`, `failureCode` e `idempotentReplay`. A
+primeira resposta e o replay montam o corpo pela mesma função, então só `idempotentReplay` muda.
 
 ### 8.3 Contratos
 
@@ -955,7 +958,7 @@ Pontos em que o enunciado do desafio é ambíguo, com a interpretação adotada.
 | A18 | `POST /wallets` | Sem Idempotency-Key; deduplicação por `UNIQUE(player_id, currency)` → 409. |
 | A19 | Reconciliação | Snapshot `REPEATABLE READ` read-only; compara Σ ledger com o saldo e com o último `balance_after`. 200 com `consistent: false` em divergência; 404 sem wallet. |
 | A20 | Cursor do ledger | Ordem por `wallet_version`; cursor opaco (base64url de `{"v":n}`); `limit` 50 por padrão, máximo 200. |
-| A21 | Corpos não-201 | 202 e replays no formato de sucesso (`balance: null` se pendente); 422 no formato de erro com `failureCode` em `code`. |
+| A21 | Corpos não-201 | 202 e replays no formato de sucesso (`balance: null` se pendente); 422 e 500 (FAILED) no formato de erro, com `failureCode` explícito; na 422, `code` repete o `failureCode`. |
 | A22 | Identificadores | `walletId` UUID; os demais ids são ASCII imprimível sem espaço, 1–128 caracteres. |
 | A23 | Provedores | Sem registro de provedores; `internal` é reservado. Autorização via `ProviderIdentityPort` (no-op). |
 

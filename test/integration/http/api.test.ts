@@ -207,6 +207,7 @@ describe("POST /wagering/transactions — status matrix", () => {
     expect(first.body).toEqual({
       error: {
         code: "INSUFFICIENT_FUNDS",
+        failureCode: "INSUFFICIENT_FUNDS",
         message: expect.any(String),
         providerAction: "GIVE_UP",
         transactionId: expect.any(String),
@@ -227,6 +228,7 @@ describe("POST /wagering/transactions — status matrix", () => {
     expect(first.status).toBe(422);
     expect(first.body.error).toMatchObject({
       code: "BALANCE_LIMIT_EXCEEDED",
+      failureCode: "BALANCE_LIMIT_EXCEEDED",
       providerAction: "CONTACT_OPERATOR",
       status: "REJECTED",
       balance: money("999999999999999999.99"),
@@ -291,11 +293,20 @@ describe("POST /wagering/transactions — status matrix", () => {
     h.faults.throwAt("submit:after-ledger-insert", () => new TypeError("simulated bug"));
     const first = await submit(body);
     expect(first.status).toBe(500);
-    expectErrorShape(first.body, "INTERNAL_ERROR");
-    expect(first.body.error.transactionId).toEqual(expect.any(String));
+    expect(first.body).toEqual({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: expect.any(String),
+        transactionId: expect.any(String),
+        status: "FAILED",
+        failureCode: "INTERNAL_INVARIANT_VIOLATION",
+        idempotentReplay: false,
+      },
+    });
     const replay = await submit(body);
     expect(replay.status).toBe(500);
-    expect(replay.body.error).toMatchObject({ status: "FAILED", failureCode: "INTERNAL_INVARIANT_VIOLATION", idempotentReplay: true });
+    // Same body as the first response; only idempotentReplay tells them apart (A11).
+    expect(replay.body.error).toEqual({ ...first.body.error, idempotentReplay: true });
     expect(await walletRow(h.db.sql, wallet.id)).toEqual({ balance: "100.00", version: 1 });
   });
 });
