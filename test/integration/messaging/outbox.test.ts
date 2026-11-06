@@ -13,7 +13,7 @@ import { waitFor } from "../../support/wait";
 setDefaultTimeout(60_000);
 
 /**
- * T15 — Transactional Outbox publisher (§11) against real PostgreSQL and LocalStack.
+ * Transactional Outbox publisher (§11) against real PostgreSQL and LocalStack.
  * Events are produced by the real use cases (wallet openings and BETs) with no publisher
  * running, which is exactly the state left by a process that committed and died before
  * publishing.

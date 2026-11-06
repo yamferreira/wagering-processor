@@ -11,7 +11,7 @@ import { waitFor } from "../../support/wait";
 setDefaultTimeout(60_000);
 
 /**
- * T21 — §12: JSON logs with correlationId, messageId, transactionId, walletId and providerId; no
+ * §12: JSON logs with correlationId, messageId, transactionId, walletId and providerId; no
  * sensitive data or full financial payloads. The amounts used here are distinctive so the raw
  * log text can be searched for them — and cannot occur inside an ISO timestamp (seconds are
  * 00–59, so "71.11" or "731.19" never match "…:SS.mmm").

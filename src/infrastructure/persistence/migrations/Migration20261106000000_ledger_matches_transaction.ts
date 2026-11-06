@@ -1,7 +1,7 @@
 import { Migration } from "@mikro-orm/migrations";
 
 /**
- * Defense in depth (§6.4, independent review of T27): a ledger entry must describe its transaction.
+ * Defense in depth (§6.4): a ledger entry must describe its transaction.
  * The application already guarantees it; this trigger makes it true even for a bug or a manual write.
  *
  * On INSERT into wallet_ledger_entries, the referenced wager transaction must:

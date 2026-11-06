@@ -12,7 +12,7 @@ export interface TransportCredentials {
 }
 
 /**
- * Extension point for authentication (CHALLENGE §2). Not implemented on purpose: see
+ * Extension point for authentication (§2 of the challenge). Not implemented on purpose: see
  * ARCHITECTURE.md §10 for the Keycloak (OIDC client-credentials per provider) design.
  */
 export interface ProviderIdentityPort {

@@ -10,7 +10,7 @@ import { waitFor } from "../../support/wait";
 // Real PostgreSQL/LocalStack: Bun applies bunfig/preload timeouts to the first file only, so set it per file.
 setDefaultTimeout(60_000);
 
-/** T22 — §12 metrics on GET /metrics, checked after a scripted sequence of operations. */
+/** §12 metrics on GET /metrics, checked after a scripted sequence of operations. */
 type Labels = Record<string, string>;
 
 function parse(text: string): { name: string; labels: Labels; value: number }[] {

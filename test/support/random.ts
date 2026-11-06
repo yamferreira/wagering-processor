@@ -1,6 +1,6 @@
 /**
  * Deterministic PRNG for tests, in bigint (64-bit LCG, Knuth MMIX constants), so random MONEY is drawn
- * without ever touching `number` arithmetic (CLAUDE.md: "nem em testes"). `chance()` returns a plain
+ * without ever touching `number` arithmetic (no float for money, not even in tests). `chance()` returns a plain
  * probability for non-money decisions (which operation, shuffle order).
  */
 const MASK = (1n << 64n) - 1n;

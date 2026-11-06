@@ -13,7 +13,7 @@ import { waitFor } from "../../support/wait";
 setDefaultTimeout(60_000);
 
 /**
- * T14 — SQS consumer against real LocalStack queues and a real PostgreSQL database.
+ * SQS consumer (§10) against real LocalStack queues and a real PostgreSQL database.
  * Input queue visibility is 3 s so "abandoned" messages (simulated crashes) come back quickly.
  */
 async function txRow(h: MessagingHarness, providerId: string, externalId: string) {

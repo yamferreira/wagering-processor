@@ -1,5 +1,5 @@
 /**
- * Stable, machine-readable rejection/failure codes (CHALLENGE §7.2).
+ * Stable, machine-readable rejection/failure codes (§7.2 of the challenge).
  * Values are part of the public contract: never rename, only add.
  */
 export enum FailureCode {

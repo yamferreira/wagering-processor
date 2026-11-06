@@ -44,7 +44,7 @@ const reject = (code: FailureCode, details?: { field: ReferenceMismatchField }):
   details ? { type: "REJECT", code, details } : { type: "REJECT", code };
 
 /**
- * Business rules of CHALLENGE §7 as a pure function. The caller must hold the wallet lock,
+ * Business rules of the challenge (§7) as a pure function. The caller must hold the wallet lock,
  * so `wallet` is the latest committed state and `lookup` cannot change underneath.
  */
 export function decide(tx: WagerTransaction, wallet: Wallet, lookup: ReferenceLookup | undefined): Decision {

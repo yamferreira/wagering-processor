@@ -9,7 +9,7 @@ import { wagerCommand } from "../../support/use-cases";
 setDefaultTimeout(60_000);
 
 /**
- * T23 — §9: "Divergências não são corrigidas silenciosamente: devem ser logadas, contabilizadas em
+ * §9: "Divergências não são corrigidas silenciosamente: devem ser logadas, contabilizadas em
  * métrica e sinalizadas na resposta." The schema makes a divergence impossible through the
  * application, so the test corrupts a balance as the database superuser with the guard trigger
  * disabled — the only way it could happen (manual intervention, bug in a migration, …).

@@ -11,7 +11,7 @@ import { assertLedgerInvariant } from "../../support/invariants";
 setDefaultTimeout(60_000);
 
 /**
- * T17 — readiness per dependency and transient infrastructure failures surfacing as 503 with
+ * Readiness per dependency and transient infrastructure failures surfacing as 503 with
  * Retry-After (§3, §9): the provider can always resend with the same Idempotency-Key.
  */
 const UNREACHABLE_SQS = "http://127.0.0.1:1";

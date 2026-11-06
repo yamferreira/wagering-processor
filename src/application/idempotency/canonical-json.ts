@@ -1,5 +1,5 @@
 /**
- * Canonical JSON (PLAN A14): object keys sorted recursively by UTF-16 code unit order,
+ * Canonical JSON (A14 in docs/ARCHITECTURE.md): object keys sorted recursively by UTF-16 code unit order,
  * no insignificant whitespace, `undefined` properties omitted, arrays keep their order.
  * Values that have no stable JSON form (bigint, functions, symbols, NaN, ±Infinity) are rejected.
  */

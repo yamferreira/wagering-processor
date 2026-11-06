@@ -11,7 +11,7 @@ import { waitFor } from "../support/wait";
 // Real processes, PostgreSQL and LocalStack: explicit timeout per file (Bun ignores bunfig/preload beyond the first file).
 setDefaultTimeout(120_000);
 
-/** T18 — the process harness itself: 3 real instances come up, serve, and go down without orphans. */
+/** The process harness itself: 3 real instances come up, serve, and go down without orphans. */
 describe("process harness", () => {
   let h: MessagingHarness;
 

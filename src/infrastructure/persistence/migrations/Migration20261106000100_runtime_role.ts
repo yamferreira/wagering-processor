@@ -1,7 +1,7 @@
 import { Migration } from "@mikro-orm/migrations";
 
 /**
- * Least-privilege runtime role (independent review of T27): the service connects as `wagering_app`,
+ * Least-privilege runtime role (§5): the service connects as `wagering_app`,
  * which owns nothing and is not a superuser, so it can neither bypass the schema guarantees
  * (ALTER TABLE … DISABLE TRIGGER, SET session_replication_role = replica, DROP) nor rewrite the
  * ledger: it gets SELECT/INSERT only on wallet_ledger_entries and no DELETE/TRUNCATE anywhere.

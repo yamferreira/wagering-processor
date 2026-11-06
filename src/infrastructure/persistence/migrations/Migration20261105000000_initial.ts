@@ -1,7 +1,7 @@
 import { Migration } from "@mikro-orm/migrations";
 
 /**
- * Initial schema. Uniqueness, immutability and non-negativity live here (CHALLENGE §5),
+ * Initial schema. Uniqueness, immutability and non-negativity live here (§5 of the challenge),
  * not only in application code. See ARCHITECTURE.md §5 for the rationale of each object.
  */
 export class Migration20261105000000_initial extends Migration {

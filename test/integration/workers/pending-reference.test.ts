@@ -15,7 +15,7 @@ import { waitFor } from "../../support/wait";
 setDefaultTimeout(60_000);
 
 /**
- * T16 — PENDING_REFERENCE worker (§7.1, A7, A28). The "slow" runtime has a 60 s first retry, so a
+ * PENDING_REFERENCE worker (§7.1, A7, A28). The "slow" runtime has a 60 s first retry, so a
  * dependent that resolves within seconds can only have been woken up by its reference arriving.
  */
 type Row = { id: string; status: string; failure_code: string | null; reference_attempts: number };

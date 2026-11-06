@@ -82,8 +82,8 @@ onde a medição oscila. Daí os ~8 ms (Linux) e ~16 ms (Windows) de
 CPU por requisição. O throughput de uma instância é ≈ núcleos ocupados ÷ CPU por requisição:
 1,5 ÷ 8 ms ≈ 190 req/s no Linux, que é o medido.
 
-> **Correção de um achado anterior.** No dia 2 (§6.2 do ARCHITECTURE), atribuí os "~10 ms de CPU por
-> submissão" ao trabalho do ORM (fork, montagem de queries, hidratação). A sonda mostra que o custo
+> **O custo não é do ORM.** A hipótese natural seria atribuir os "~10 ms de CPU por submissão" ao
+> trabalho do ORM (fork, montagem de queries, hidratação). A sonda mostra que o custo
 > dominante é a espera ativa do driver durante os round-trips. Isso também explica por que a CPU por
 > operação varia com o paralelismo (32 ms sequencial e ~10 ms com 40 em paralelo, quando as esperas se
 > sobrepõem): é custo por *espera*, não por *instrução*.
@@ -109,7 +109,7 @@ todo). A outbox nunca acumulou mais de ~220 eventos (lag ≤ 1,2 s) e ficou 100%
 depois do fim da carga. Os replays idempotentes são os mais baratos (p50 de 7 a 12 ms com carga baixa): o
 fast path é uma leitura, sem lock.
 
-## O que eu faria a seguir (por impacto)
+## Próximos passos (por impacto)
 
 1. **Trocar o driver do hot path:** usar `Bun.SQL` (ou outro driver sem espera ativa) nas cerca de 12
    instruções da submissão, mantendo o MikroORM para o resto. Pela sonda, a CPU por round-trip cai de ~2× a

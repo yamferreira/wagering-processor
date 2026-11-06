@@ -1,7 +1,7 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> Decisões, garantias, trade-offs e limitações da solução. Cada seção indica a tarefa (T01…T28) que a
-> implementou e a seção do enunciado (`§n`) que atende. As interpretações da especificação (`A1…A32`)
+> Decisões, garantias, trade-offs e limitações da solução. Cada seção indica a seção do enunciado
+> (`§n`) que atende. As interpretações da especificação (`A1…A32`)
 > estão no [Apêndice A](#apêndice-a--interpretações-da-especificação-a1a32). Setup e comandos: `README.md`.
 
 ## 1. Visão geral
@@ -59,7 +59,7 @@ processos nunca são usadas como garantia.
 | Validação de contrato | zod 4 | schemas estritos nos DTOs HTTP e no envelope SQS |
 | Logs / métricas | pino / prom-client | |
 
-### 2.1 Decisões de ambiente (T01)
+### 2.1 Decisões de ambiente
 
 - **LocalStack fixado em `4.14.0`.** A imagem `localstack/localstack:latest` (2026.x) exige
   `LOCALSTACK_AUTH_TOKEN` e encerra com "License activation failed". A 4.14.0 é a última
@@ -78,7 +78,7 @@ processos nunca são usadas como garantia.
 
 ## 4. Modelo de domínio
 
-### 4.1 Money (T02)
+### 4.1 Money
 
 - **Representação:** inteiro de unidades menores (centavos) como `bigint`, escala fixa de 2
   casas e moeda ISO-4217 (`^[A-Z]{3}$`). Nenhuma operação passa por `number`.
@@ -98,7 +98,7 @@ processos nunca são usadas como garantia.
 - **Erros:** `InvalidMoneyError`, `InvalidCurrencyError`, `CurrencyMismatchError`,
   `MoneyOverflowError`, todos subclasses de `DomainError`, com `code` estável.
 
-### 4.2 Taxonomia de `failureCode` (T03, §7.2)
+### 4.2 Taxonomia de `failureCode` (§7.2)
 
 Todo código é **terminal para a sua idempotency key**: reenviar a mesma requisição devolve o
 mesmo resultado (replay). Para tentar de novo após corrigir algo, o provedor precisa de uma key nova.
@@ -122,12 +122,12 @@ e o reenvio com a mesma key é seguro.
 O saldo insuficiente numa BET e numa reversão têm códigos e ações diferentes. A primeira é rotina;
 a segunda indica um estado contábil que precisa de intervenção (§7).
 
-> Desvio menor do PLAN (T03): o plano previa a ação `RETRY`. Ela não existe porque nenhum
-> `failureCode` é retentável com a mesma key; o retry fica restrito a 503 e transientes.
+> Não existe ação `RETRY`: nenhum `failureCode` é retentável com a mesma key. O retry fica restrito
+> a 503 e a falhas transitórias.
 
 `WALLET_NOT_FOUND` (A9) não é `failureCode`: a transação não é persistida (FK) e a resposta é 404.
 
-### 4.3 Wallet e WalletLedgerEntry (T04)
+### 4.3 Wallet e WalletLedgerEntry
 
 - **Única via de mudança de saldo:** `debit`/`credit` (e `move(direction)`, usado pelas regras).
   Cada chamada devolve o `WalletLedgerEntry` criado no mesmo passo. A entrada é construída e
@@ -136,19 +136,19 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
   abertura leva `walletVersion = 1`, como no exemplo da §9, que mostra `version: 1` com saldo 1000.00.
   Cada movimento posterior incrementa a versão em exatamente 1, e a entrada registra a versão
   resultante. Daí vale a relação `version == nº de lançamentos` (ou `+1` se a wallet abriu com
-  saldo zero), que o schema reforça com `UNIQUE(wallet_id, wallet_version)` (T09).
+  saldo zero), que o schema reforça com `UNIQUE(wallet_id, wallet_version)` (§5.1).
 - **`walletVersion` no lançamento:** campo adicional ao esqueleto da §6.4. Serve de chave de
   ordenação estável do ledger (cursor, A20) e de elo de encadeamento (`balance_before` da versão
   *n* = `balance_after` da versão *n−1*).
 - **Guardas:** `debit` lança `InsufficientFundsError` sem alterar estado. O caminho de negócio
-  verifica `canDebit` antes (T06) e transforma isso em `INSUFFICIENT_FUNDS` /
+  verifica `canDebit` antes (§4.5) e transforma isso em `INSUFFICIENT_FUNDS` /
   `REVERSAL_INSUFFICIENT_FUNDS`. Movimento zero ou de outra moeda é rejeitado.
 - **Abertura:** `Wallet.open` recebe os ids da transação OPENING e do lançamento (o domínio não
   gera ids). Com saldo inicial zero não há OPENING nem lançamento.
 - **Imutabilidade do lançamento:** campos `readonly` + `Object.freeze`, e datas copiadas
   defensivamente. `create` valida a aritmética, valores positivos, uma única moeda, saldos não negativos e `walletVersion ≥ 1`.
 
-### 4.4 WagerTransaction: máquina de estados (T05)
+### 4.4 WagerTransaction: máquina de estados
 
 ```
             ┌──────────────► PROCESSED  (terminal)
@@ -183,7 +183,7 @@ a segunda indica um estado contábil que precisa de intervenção (§7).
 - **OPENING (A17):** `providerId = "internal"`, `externalTransactionId = "opening:{walletId}"`,
   `idempotencyKey = "internal:opening:{walletId}"`, sem `roundId`/`gameId`, criada já PROCESSED.
 
-### 4.5 Regras de negócio: `decide()` + `applyDecision()` (T06, §7)
+### 4.5 Regras de negócio: `decide()` + `applyDecision()` (§7)
 
 `decide(tx, wallet, lookup)` é uma função pura. O use case a chama **com o lock da wallet
 adquirido**, então `wallet` e `lookup` refletem o último estado commitado e não mudam durante
@@ -209,11 +209,11 @@ Ordem de avaliação (a primeira regra que falha decide):
 a spec literal. O provedor deve fazer o ROLLBACK do WIN antes. Bloquear isso exigiria uma regra
 não prevista na especificação, que só pegaria WINs com referência.
 
-**PENDING_REFERENCE com backoff (§7.1, A25):** `ReferenceRetryPolicy`, de domínio e pura:
+**PENDING_REFERENCE com backoff (§7.1, A28):** `ReferenceRetryPolicy`, de domínio e pura:
 `delay(n) = min(base · 2ⁿ, cap)`. O default é 10 retries, base 2s e cap 5 min, o que dá
 2+4+8+…+256+300+300 = 1110 s (≈ 18,5 min) até `REJECTED / REFERENCE_NOT_FOUND`. A primeira
 marcação agenda sem contar tentativa; o retry nº `maxAttempts` que ainda não encontra a
-referência rejeita. Os parâmetros são configuráveis por env (T16).
+referência rejeita. Os parâmetros são configuráveis por env (§9.4).
 
 **Referência que existe mas ainda está pendente (A7):** o dependente **não** gasta tentativas
 enquanto a referência está em PENDING_REFERENCE; ele espera a referência ficar terminal. Isso
@@ -227,10 +227,10 @@ terminava 30.00 acima do esperado pelo provedor (teste de integração dedicado)
 
 **Justificativa do limite:** entregas fora de ordem entre provedores costumam se resolver em
 segundos ou minutos. Esperar 18 min cobre filas atrasadas e retries do provedor sem manter
-transações pendentes indefinidamente. Além disso, o wake-up (T16) resolve na hora quando a
+transações pendentes indefinidamente. Além disso, o wake-up (A28) resolve na hora quando a
 referência chega.
 
-### 4.6 Eventos de integração, Outbox e Inbox (T07, §6.5, §11)
+### 4.6 Eventos de integração, Outbox e Inbox (§6.5, §11)
 
 - **Envelope:** a classe abstrata `IntegrationEvent<T>` tem uma subclasse por evento, e
   `eventType`/`version` são campos da subclasse (mais `static TYPE` para os consumidores). `data`
@@ -255,7 +255,7 @@ referência chega.
 
 ## 5. Persistência e schema
 
-### 5.1 Migrations (T09)
+### 5.1 Migrations
 
 - Uma migration MikroORM em SQL explícito (`Migration20261105000000_initial`), com `up` e `down`
   reversíveis, registrada numa lista explícita (`migrationsList`) e não por glob de arquivos.
@@ -281,13 +281,13 @@ referência chega.
 | Ledger append-only | triggers `BEFORE UPDATE/DELETE` (por linha) e `BEFORE TRUNCATE` → `23001` |
 | Encadeamento do ledger | trigger `ledger_check_chain`: versão = anterior + 1 e `balance_before` = `balance_after` anterior (ou 0 na primeira entrada, versão 1 ou 2) |
 | Saldo ⇔ ledger | constraint triggers **deferred** `wallet_check_ledger` e `ledger_check_wallet`: no commit, `wallets.version/balance` = versão e `balance_after` da última entrada. Sem entradas, exige versão 1 e saldo 0. Cobre "toda alteração de saldo tem lançamento e vice-versa" |
-| Lost update | `UNIQUE (wallet_id, wallet_version)`, além do lock e do `WHERE version = ?` (T10) |
+| Lost update | `UNIQUE (wallet_id, wallet_version)`, além do lock e do `WHERE version = ?` (§6.1) |
 | Transação terminal imutável | trigger `wager_tx_guard_update`: nada muda após PROCESSED/REJECTED/FAILED, colunas de negócio nunca mudam e não há volta para PENDING. DELETE/TRUNCATE proibidos |
 | Coerência de status | CHECKs: `failure_code` ⇔ REJECTED/FAILED; PROCESSED exige `processed_at` + `resulting_balance`; PENDING_REFERENCE exige `next_reference_attempt_at` |
 | Regras por kind | REFUND/ROLLBACK exigem referência; BET/OPENING não podem ter; valor > 0 exceto LOSS; `provider_id = 'internal'` ⇔ OPENING; round/game obrigatórios exceto OPENING |
 | Outbox/Inbox | PK da outbox = `eventId`; conteúdo imutável e publicação definitiva (trigger). Inbox com PK `(consumer_name, message_id)` e imutável |
-| Lançamento descreve a sua transação (T27) | trigger `ledger_check_transaction` (AFTER INSERT, imediato): a transação precisa estar PROCESSED e não ser LOSS, com o mesmo valor e moeda; a direção segue o kind (BET → DEBIT; WIN/REFUND/OPENING → CREDIT; ROLLBACK → o inverso do que reverte) → `23000`. Migration `Migration20261106000000_ledger_matches_transaction` |
-| Ninguém em runtime burla o schema (T27) | role `wagering_app` (migration `…_runtime_role`): `NOSUPERUSER`, não é dono de nada, `SELECT, INSERT, UPDATE` nas tabelas de estado e só `SELECT, INSERT` no ledger. `UPDATE/DELETE/TRUNCATE` no ledger, `DISABLE TRIGGER`, `session_replication_role = replica` e DDL → `42501` (testado) |
+| Lançamento descreve a sua transação | trigger `ledger_check_transaction` (AFTER INSERT, imediato): a transação precisa estar PROCESSED e não ser LOSS, com o mesmo valor e moeda; a direção segue o kind (BET → DEBIT; WIN/REFUND/OPENING → CREDIT; ROLLBACK → o inverso do que reverte) → `23000`. Migration `Migration20261106000000_ledger_matches_transaction` |
+| Ninguém em runtime burla o schema | role `wagering_app` (migration `…_runtime_role`): `NOSUPERUSER`, não é dono de nada, `SELECT, INSERT, UPDATE` nas tabelas de estado e só `SELECT, INSERT` no ledger. `UPDATE/DELETE/TRUNCATE` no ledger, `DISABLE TRIGGER`, `session_replication_role = replica` e DDL → `42501` (testado) |
 
 `resulting_balance_currency` existe porque o saldo observado é na moeda da **wallet**, que numa
 rejeição `CURRENCY_MISMATCH` difere da moeda da operação.
@@ -296,10 +296,10 @@ rejeição `CURRENCY_MISMATCH` difere da moeda da operação.
 commit que toca a wallet. É aceito em troca da garantia, no próprio banco, de que saldo e
 ledger não divergem mesmo diante de um bug na aplicação ou de SQL manual.
 
-**Dois roles (achado do revisor independente, T27):** o serviço conecta como `wagering_app`
-(`DATABASE_URL`) e as migrations como o dono do schema (`MIGRATION_DATABASE_URL`). Antes, o runtime usava
-o mesmo superusuário das migrations e, em tese, poderia desligar os triggers. Hoje só o dono ou um
-superusuário consegue (intervenção manual), e a reconciliação detecta a divergência (T23). Em
+**Dois roles:** o serviço conecta como `wagering_app` (`DATABASE_URL`) e as migrations como o dono do
+schema (`MIGRATION_DATABASE_URL`). Se o runtime usasse o superusuário das migrations, poderia, em tese,
+desligar os triggers. Assim, só o dono ou um superusuário consegue (intervenção manual), e a
+reconciliação detecta a divergência (§7.4). Em
 desenvolvimento a migration cria o role com uma senha fixa; em produção o role e o segredo vêm de fora, e a
 migration só concede os privilégios.
 
@@ -316,7 +316,7 @@ em `number`, e tem um teste negativo que prova que detecta divergências.
 - **Mensageria em teste:** `createMessagingHarness` cria um banco novo, filas reais no LocalStack com
   prefixo único e runtimes in-process com os papéis pedidos; `spawnInstance` sobe processos reais de
   `src/main.ts` (prontidão via IPC, nenhum órfão: todos são mortos no teardown e no exit do runner).
-- **Harness de processos (T18):** `spawnCluster(h, n)` sobe N instâncias reais (`bun src/main.ts`, todos os
+- **Harness de processos:** `spawnCluster(h, n)` sobe N instâncias reais (`bun src/main.ts`, todos os
   papéis por padrão, porta 0 informada pelo filho via IPC) sobre o mesmo banco e as mesmas filas.
   `stop()` é gracioso (SIGTERM em POSIX, IPC no Windows) e `kill()` é crash (SIGKILL/TerminateProcess).
   Todo filho é registrado e morto no `afterEach`/`afterAll` e no `exit` do runner; o teste do harness
@@ -328,7 +328,7 @@ em `number`, e tem um teste negativo que prova que detecta divergências.
   com `pathIgnorePatterns`); `bun run test:concurrency` roda a concorrência explicitamente
   (`--path-ignore-patterns=__none__`) e `bun run test:all` roda as duas. Juntas, passariam de 3 minutos.
 
-### 5.4 Mapeamento MikroORM (T10)
+### 5.4 Mapeamento MikroORM
 
 - **Por que MikroORM:** `em.transactional()` com escopo explícito, `LockMode.PESSIMISTIC_WRITE`
   e `EntitySchema`, que mapeia classes simples sem decorators e mantém o domínio puro.
@@ -359,7 +359,7 @@ em `number`, e tem um teste negativo que prova que detecta divergências.
 
 ## 6. Concorrência
 
-### 6.1 Estratégia (T10, §8)
+### 6.1 Estratégia (§8)
 
 **Lock pessimista por linha de wallet** (`SELECT … FOR UPDATE` via
 `LockMode.PESSIMISTIC_WRITE`) dentro de `em.transactional()`, com mais duas barreiras:
@@ -399,7 +399,7 @@ só trava essa linha de `wager_transactions`, nunca uma segunda wallet. O worker
 tem o lock da wallet dela e não espera pela primeira, então não se forma ciclo. O claim do worker usa
 `SKIP LOCKED` e nunca espera.
 
-### 6.2 Suíte de concorrência in-process (T19, §8, §13)
+### 6.2 Suíte de concorrência in-process (§8, §13)
 
 Paralelismo real no PostgreSQL (pools de 20 a 40 conexões, todas as operações disparadas de uma vez com
 `Promise.all`, sem mocks):
@@ -415,15 +415,15 @@ Paralelismo real no PostgreSQL (pools de 20 a 40 conexões, todas as operações
 | Lock por linha (determinístico) | com X travada, Y faz commit em < 0,9s e X recebe `LOCK_TIMEOUT` |
 
 **Throughput por processo:** uma submissão faz cerca de 12 round-trips e o processo fica limitado por CPU
-(CPU ≈ wall) enquanto o PostgreSQL fica ocioso. A T24 mediu a causa (`docs/LOAD-TEST.md`): pelo driver
+(CPU ≈ wall) enquanto o PostgreSQL fica ocioso. O teste de carga mediu a causa (`docs/LOAD-TEST.md`): pelo driver
 `pg` do MikroORM no Bun, cada round-trip consome tanta CPU quanto dura (espera ativa). O custo é por
 *espera*, não por instrução: cerca de 8 ms de CPU por requisição no Linux e 16 ms no Windows sob carga,
-32 ms em sequência e ~10 ms com 40 em paralelo. Isso **corrige** a atribuição feita no dia 2, que punha a
-culpa no trabalho do ORM (fork, queries, hidratação). Não é contenção de lock.
+32 ms em sequência e ~10 ms com 40 em paralelo. O custo não vem do trabalho do ORM (fork, queries,
+hidratação) nem de contenção de lock.
 
 ## 7. Idempotência
 
-### 7.1 Algoritmo do `payloadHash` (T08, §9, A14)
+### 7.1 Algoritmo do `payloadHash` (§9, A14)
 
 1. **Subconjunto de negócio**, selecionado explicitamente: `providerId`, `externalTransactionId`,
    `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency` e
@@ -449,9 +449,9 @@ calculado de forma independente via `sha256sum`) trava o algoritmo em teste.
 | mesmo `(providerId, externalTransactionId)` com outra key | `CONFLICT / EXTERNAL_TRANSACTION_CONFLICT` → 409 (A13) |
 
 A garantia vem do banco (`UNIQUE(idempotency_key)` e `UNIQUE(provider_id, external_transaction_id)`,
-T09). Essa função só interpreta a colisão.
+§5.1). Essa função só interpreta a colisão.
 
-### 7.3 Fluxo de `SubmitWagerTransaction` (T11)
+### 7.3 Fluxo de `SubmitWagerTransaction`
 
 O mesmo use case atende HTTP e SQS (§10):
 
@@ -490,7 +490,7 @@ nem evento), e o retry aplica exatamente uma vez.
 **Fault points** (`FaultInjector`, no-op em produção): pontos nomeados nos fluxos críticos, usados
 pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código de produção.
 
-### 7.4 Consultas e reconciliação (T11)
+### 7.4 Consultas e reconciliação
 
 - **Ledger:** o cursor é base64url de `{"v": wallet_version}` (opaco, A20). Como `wallet_version` é
   único e crescente por wallet, as páginas não pulam nem repetem entradas mesmo com inserts concorrentes
@@ -498,7 +498,7 @@ pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código
 - **Reconciliação (A19):** roda numa transação `REPEATABLE READ READ ONLY`, um snapshot consistente que
   não bloqueia a wallet. Confere três coisas: `Σ CREDIT − Σ DEBIT == balance`, `balance_after` da última
   entrada `== balance` e versão da última entrada `== version`. Divergências **nunca são corrigidas**.
-- **Divergência (T23, §9):** a resposta continua 200, com `consistent: false`, `difference` com sinal
+- **Divergência (§9):** a resposta continua 200, com `consistent: false`, `difference` com sinal
   (`stored − calculated`) e `details`. O `ReconciliationObserver` do container emite um log de **error**
   (`reconciliation divergence…`, com `walletId`, `checkedEntries`, `ledgerSumMatches` e os booleanos de
   `details`, sem valores) e incrementa `reconciliation_divergences_total`. Como o schema impede que a
@@ -508,7 +508,7 @@ pelos testes para simular crash, erro ou atraso. Não há `if (test)` no código
 
 ## 8. API HTTP e mapeamento de status
 
-### 8.1 Estrutura (T12)
+### 8.1 Estrutura
 
 - O Nest só existe em `src/infrastructure/http`. Os controllers são adaptadores finos: validam o
   contrato com **zod estrito** (campo desconhecido → 400), chamam o use case do container e apresentam o resultado.
@@ -553,7 +553,7 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 - Identificadores (A22): `walletId` é UUID; os demais têm de 1 a 128 caracteres ASCII imprimíveis sem
   espaço. A `Idempotency-Key` tem de 1 a 255 caracteres.
 
-### 8.4 Health e falhas transitórias (T17, §3, §9)
+### 8.4 Health e falhas transitórias (§3, §9)
 
 - `GET /health/live`: sempre 200 enquanto o processo responde, sem checar dependências (uma queda do
   banco não deve fazer o orquestrador reiniciar processos saudáveis).
@@ -573,7 +573,7 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 
 ## 9. Mensageria: inbox, outbox, PENDING_REFERENCE
 
-### 9.1 Topologia de filas (T13, §10, A24)
+### 9.1 Topologia de filas (§10, A24)
 
 | Fila | Papel | Atributos |
 |---|---|---|
@@ -596,7 +596,7 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 - **Isolamento em teste:** cada arquivo de teste cria suas próprias filas com prefixo único
   (`t<pid>-<label>-<rand>-…`) e as apaga no `afterAll`.
 
-### 9.2 Consumidor de `WagerTransactionRequested` (T14, §10, A9, A27)
+### 9.2 Consumidor de `WagerTransactionRequested` (§10, A9, A27)
 
 **Fluxo por mensagem** (`HandleWagerMessage` + `WagerTransactionConsumer`):
 
@@ -633,9 +633,8 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 - **Shutdown gracioso:** para de fazer polling, dá `SHUTDOWN_GRACE_MS` para as mensagens em andamento e
   devolve as restantes com `ChangeMessageVisibility(0)`. **O long poll aberto não é abortado:** abortar só
   cancela o lado do cliente, e o broker entregaria a mensagem devolvida a esse poll "morto", deixando-a
-  invisível por um visibility timeout inteiro. Esse bug foi pego pelo teste com processo real e corrigido:
-  o poll termina sozinho em até `SQS_WAIT_TIME_S` e o que ele trouxer é devolvido na hora. O `stop()`
-  espera o **loop inteiro** do consumidor, não só o poll: assim essa devolução termina antes de o processo
+  invisível por um visibility timeout inteiro. Por isso o poll termina sozinho em até `SQS_WAIT_TIME_S`, e
+  o que ele trouxer é devolvido na hora. O `stop()` espera o **loop inteiro** do consumidor, não só o poll: assim essa devolução termina antes de o processo
   sair (teste com processo real: mensagem enviada durante o shutdown volta a ficar visível em segundos, não
   depois dos 30 s do visibility timeout). As esperas internas do loop (capacidade cheia, backoff de
   receive) são interrompidas pelo `stop()`. Uma mensagem
@@ -650,7 +649,7 @@ corpo e `idempotentReplay: true`. Um replay de rejeição nunca parece sucesso.
 - **Fault injection em processos filhos:** env `FAULTS="<ponto>=<ação>[*n]"` (`crash` = SIGKILL em si
   mesmo, `throw`, `transient`, `delay:<ms>`), lida pelo `EnvFaultInjector`. Vazia em produção (no-op).
 
-### 9.3 Publisher da outbox (T15, §11, A24, A29)
+### 9.3 Publisher da outbox (§11, A24, A29)
 
 `PublishOutboxBatch` faz uma rodada numa única transação curta:
 
@@ -686,7 +685,7 @@ COMMIT
   a uma projeção na mesma transação que a sua linha de inbox (`events-audit`, `messageId = eventId`). Com
   cada evento entregue 3 vezes, a projeção conta cada um exatamente uma vez.
 
-### 9.4 Worker de PENDING_REFERENCE (T16, §7.1, A7, A28)
+### 9.4 Worker de PENDING_REFERENCE (§7.1, A7, A28)
 
 Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nunca aninhados:
 
@@ -728,7 +727,7 @@ Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nu
   transação) e a expiração do lease, além do isolamento: erro permanente → FAILED só naquele item e o
   resto do lote aplicado; erro transitório → só aquele item adiado, sem gastar tentativa.
 
-### 9.5 Múltiplas instâncias, crash e restart (T20, §5, §8, §10, §11, §13)
+### 9.5 Múltiplas instâncias, crash e restart (§5, §8, §10, §11, §13)
 
 Uma **instância** (A31) é um processo `bun run start`. A env `ROLES` (`api,consumer,publisher,pending-worker`,
 todos por padrão) separa os papéis para escalar cada um. Nenhum papel guarda estado em memória: toda
@@ -760,7 +759,7 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
 
 - `ProviderIdentityPort.resolve(credentials) → ProviderIdentity { subject, providerIds }` (porta de aplicação).
 - `AuthGuard` global (Nest) resolve a identidade e a anexa à requisição. `@Public()` libera
-  `/health/*` (e `/metrics` no dia 3).
+  `/health/*` e `/metrics`.
 - Os controllers chamam `assertCanActAs(identity, providerId)`, de modo que o `providerId` do body (e o do path
   na consulta por id externo) precisa ser um dos que o chamador representa.
 - O adapter atual é `NoopProviderIdentity` (todo chamador pode agir como qualquer provider). Um teste
@@ -785,7 +784,7 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
 
 ## 11. Observabilidade
 
-### 11.1 Logs estruturados (T21, §12)
+### 11.1 Logs estruturados (§12)
 
 - **Formato:** pino, uma linha JSON por evento em stdout: `time` (ISO-8601), `level` (texto), `service`,
   `pid`, `msg`, `component` e os campos do evento.
@@ -812,7 +811,7 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
   dos valores monetários usados (escolhidos para serem únicos) aparece no texto bruto. A redaction é
   testada à parte.
 
-### 11.2 Métricas (T22, §12)
+### 11.2 Métricas (§12)
 
 `GET /metrics` (aberto, formato Prometheus). Os use cases reportam fatos de domínio pela porta `Metrics`
 (`application/ports/metrics.ts`, no-op por padrão), e `PromMetrics` (prom-client) os exporta. Há um
@@ -827,7 +826,7 @@ correção financeira. O ponto de extensão, porém, está **ligado e testado**:
 | Conflitos de lock (A30) | histograma `wallet_lock_wait_seconds` + `wallet_lock_conflicts_total{type}` | espera no `FOR UPDATE` da wallet; `lock_timeout`/`deadlock`/`serialization`/`version_conflict` vindos do `TransactionRunner` |
 | Outbox lag | gauges `outbox_pending` e `outbox_lag_seconds` + `outbox_published_total` | pendentes e idade da mais antiga lidos do PostgreSQL no scrape (estado global) |
 | Latência de processamento | histograma `wagering_processing_duration_seconds{channel}` | submissão inteira (HTTP e SQS) e resolução no worker |
-| Divergência de reconciliação | `reconciliation_divergences_total` | T23 |
+| Divergência de reconciliação | `reconciliation_divergences_total` | §7.4 |
 
 Também entram as métricas padrão de processo (`collectDefaultMetrics`: CPU, memória, event loop lag).
 Os gauges globais têm timeout de 2s: com o banco ou a fila fora do ar, o scrape não trava e o gauge mantém
@@ -839,7 +838,7 @@ Sugestão de alertas: `outbox_lag_seconds > 60`, `increase(dlq_messages_total[5m
 `increase(reconciliation_divergences_total[5m]) > 0` (crítico) e p99 de `wallet_lock_wait_seconds` > 1s
 (hot wallet).
 
-### 11.3 CI (T28)
+### 11.3 CI
 
 `.github/workflows/ci.yml` roda em `ubuntu-24.04`, com **PostgreSQL 16.15** e **LocalStack 4.14.0** como
 services, em todo push e em PR para a `main`:
@@ -903,7 +902,7 @@ andamento. O primeiro run em Linux passou sem nenhuma correção específica de 
   `statement_timeout` (10s) e até 3 retries internos, bem abaixo do visibility timeout de 30s. Uma
   mensagem que ainda assim passe do timeout é reentregue, e a inbox a deduplica.
 
-## 13. Revisão final independente (T27)
+## 13. Revisão final independente
 
 Um revisor que não participou da implementação conferiu, item por item, §5 (restrições invioláveis), §13
 (testes obrigatórios) e §14 (falhas eliminatórias) contra o código e o corpo dos testes. **Veredito:

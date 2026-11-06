@@ -25,7 +25,7 @@ describe("Money.from — accepted inputs", () => {
   });
 });
 
-describe("Money.from — rejected inputs (strict contract, PLAN A1)", () => {
+describe("Money.from — rejected inputs (strict contract, A1)", () => {
   test.each([
     ["empty string", ""],
     ["blank", " "],

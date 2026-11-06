@@ -8,7 +8,7 @@ export interface ReferenceRetryPolicyProps {
 }
 
 /**
- * Exponential backoff for PENDING_REFERENCE (CHALLENGE §7.1, PLAN A25):
+ * Exponential backoff for PENDING_REFERENCE (§7.1 of the challenge; A28 in docs/ARCHITECTURE.md):
  * delay(n) = min(base · 2ⁿ, cap), where n = 0 is the first scheduling.
  */
 export class ReferenceRetryPolicy {
@@ -34,7 +34,7 @@ export class ReferenceRetryPolicy {
     return new ReferenceRetryPolicy(maxAttempts, baseDelayMs, maxDelayMs);
   }
 
-  /** Default from PLAN A25: 10 retries, 2s base, 5 min cap (~18 min total). */
+  /** Default (A28): 10 retries, 2s base, 5 min cap (~18 min total). */
   static default(): ReferenceRetryPolicy {
     return ReferenceRetryPolicy.of({ maxAttempts: 10, baseDelayMs: 2_000, maxDelayMs: 300_000 });
   }
