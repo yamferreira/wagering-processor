@@ -12,8 +12,10 @@ import { join } from "node:path";
  * Exit code 1 when anything is flagged.
  */
 const ROOTS = ["src", "test", "scripts"];
-const MONEY = /\b(amount|balance\w*|money|Money|minor\w*|initialBalance|resultingBalance|storedBalance|calculatedBalance|difference)\b/;
+const MONEY = /\b(amount|cents|balance\w*|money|Money|minor\w*|initialBalance|resultingBalance|storedBalance|calculatedBalance|difference)\b/;
 const FLOAT_USE = [
+  /BigInt\s*\(\s*Math\./, // money built from float arithmetic, even when converted afterwards
+  /BigInt\s*\([^)]*[*/]/,
   /parseFloat\s*\(/,
   /parseInt\s*\(/,
   /\bNumber\s*\(/,

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { TransientInfrastructureError, TransientReason } from "../../../src/application/errors";
-import { InjectedFaultError } from "../../../src/application/ports/fault-injector";
+import { type FaultPoint, InjectedFaultError } from "../../../src/application/ports/fault-injector";
 import type { Wallet } from "../../../src/domain/wallet/wallet";
 import { assertLedgerInvariant } from "../../support/invariants";
 import { jsonLogs, killAllInstances, spawnInstance } from "../../support/instances";
@@ -233,29 +233,43 @@ describe("WagerTransactionRequested consumer (in-process, real LocalStack + Post
     expect(await count(h, "wager_transactions", `wallet_id = '${w.id}' AND kind = 'BET'`)).toBe(1);
   });
 
-  test("atomicity: a crash right after the inbox insert commits nothing; the redelivery applies it exactly once", async () => {
-    const w = await h.openWallet("100.00");
-    h.faults.throwAt("consumer:after-inbox-insert", () => new InjectedFaultError("consumer:after-inbox-insert"), 1);
-    const command = wagerCommand(w, { money: { amount: "40.00", currency: "BRL" } });
-    const envelope = wagerEnvelope(command);
-    await sendEnvelope(h.queues, envelope);
+  // §11/§13: inbox, wager, ledger, wallet and outbox commit together or not at all — including when the
+  // crash happens AFTER the financial writes (ledger + wallet already written inside the transaction).
+  test.each([
+    ["right after the inbox insert", "consumer:after-inbox-insert"],
+    ["after the ledger entry was written", "submit:after-ledger-insert"],
+    ["after ledger + wallet, right before the outbox insert", "submit:before-outbox-insert"],
+  ] as [string, FaultPoint][])(
+    "atomicity: a crash %s commits nothing; the redelivery applies it exactly once",
+    async (_label, point) => {
+      const w = await h.openWallet("100.00");
+      const outboxBefore = await count(h, "outbox_messages", `aggregate_id = '${w.id}'`);
+      h.faults.throwAt(point, () => new InjectedFaultError(point), 1);
+      const command = wagerCommand(w, { money: { amount: "40.00", currency: "BRL" } });
+      const envelope = wagerEnvelope(command);
+      await sendEnvelope(h.queues, envelope);
 
-    await waitFor(() => h.faults.hits.includes("consumer:after-inbox-insert"), { description: "fault hit" });
-    // Rolled back: no inbox, no transaction, no ledger, no outbox, balance untouched.
-    expect(await count(h, "inbox_messages", `message_id = '${envelope.messageId}'`)).toBe(0);
-    expect(await txRow(h, command.providerId, command.externalTransactionId)).toBeUndefined();
-    expect(await balance(h, w.id)).toBe("100.00");
+      await waitFor(() => h.faults.hits.includes(point), { description: "fault hit" });
+      // Rolled back as a unit: no inbox, no transaction, no ledger entry, no outbox, balance and version untouched.
+      expect(await count(h, "inbox_messages", `message_id = '${envelope.messageId}'`)).toBe(0);
+      expect(await txRow(h, command.providerId, command.externalTransactionId)).toBeUndefined();
+      expect(await count(h, "wallet_ledger_entries", `wallet_id = '${w.id}'`)).toBe(1); // only the OPENING
+      expect(await count(h, "outbox_messages", `aggregate_id = '${w.id}'`)).toBe(outboxBefore);
+      const [wallet] = await h.db.sql`SELECT balance::text AS balance, version FROM wallets WHERE id = ${w.id}`;
+      expect(wallet).toEqual({ balance: "100.00", version: 1 });
 
-    const row = await waitFor(() => txRow(h, command.providerId, command.externalTransactionId), {
-      description: "redelivered and applied",
-      timeoutMs: 20_000,
-    });
-    expect(row.status).toBe("PROCESSED");
-    await waitFor(() => queueIsEmpty(h), { description: "acked" });
-    expect(await count(h, "inbox_messages", `message_id = '${envelope.messageId}'`)).toBe(1);
-    expect(await count(h, "outbox_messages", `aggregate_id = '${row.id}'`)).toBeGreaterThanOrEqual(1);
-    expect(await balance(h, w.id)).toBe("60.00");
-  });
+      const row = await waitFor(() => txRow(h, command.providerId, command.externalTransactionId), {
+        description: "redelivered and applied",
+        timeoutMs: 20_000,
+      });
+      expect(row.status).toBe("PROCESSED");
+      await waitFor(() => queueIsEmpty(h), { description: "acked" });
+      expect(await count(h, "inbox_messages", `message_id = '${envelope.messageId}'`)).toBe(1);
+      expect(await count(h, "wallet_ledger_entries", `wallet_id = '${w.id}' AND direction = 'DEBIT'`)).toBe(1);
+      expect(await count(h, "outbox_messages", `aggregate_id = '${row.id}'`)).toBeGreaterThanOrEqual(1);
+      expect(await balance(h, w.id)).toBe("60.00");
+    },
+  );
 
   test("crash after commit and before ack: the redelivery is deduplicated by the inbox and then acked", async () => {
     const w = await h.openWallet("100.00");

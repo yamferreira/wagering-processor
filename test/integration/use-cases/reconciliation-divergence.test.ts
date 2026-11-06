@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { Runtime } from "../../../src/infrastructure/app/runtime";
 import { createLogger } from "../../../src/infrastructure/observability/logger";
+import { assertLedgerInvariant } from "../../support/invariants";
 import { createMessagingHarness, type MessagingHarness } from "../../support/messaging";
 import { wagerCommand } from "../../support/use-cases";
 
@@ -12,6 +13,7 @@ setDefaultTimeout(60_000);
  * métrica e sinalizadas na resposta." The schema makes a divergence impossible through the
  * application, so the test corrupts a balance as the database superuser with the guard trigger
  * disabled — the only way it could happen (manual intervention, bug in a migration, …).
+ * The corrupted wallets violate the ledger invariant ON PURPOSE; it is asserted for the consistent one.
  */
 describe("reconciliation divergence", () => {
   let h: MessagingHarness;
@@ -57,6 +59,7 @@ describe("reconciliation divergence", () => {
       checkedEntries: 2,
     });
     expect(await divergenceCounter()).toBe(0);
+    await assertLedgerInvariant(h.db.sql, [wallet.id]);
   });
 
   test("a corrupted balance → consistent: false with the difference, an error log, the counter, and no correction", async () => {

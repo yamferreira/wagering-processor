@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { INestApplication } from "@nestjs/common";
 import { silentLogger } from "../../../src/application/ports/logger";
 import { buildContainer, type Container } from "../../../src/infrastructure/app/container";
@@ -42,6 +42,7 @@ describe("readiness", () => {
       expect(ready.status).toBe(200);
       expect(ready.body).toEqual({ status: "ready", checks: { postgres: { status: "up" }, sqs: { status: "up" } } });
     } finally {
+      await assertLedgerInvariant(h.db.sql);
       await h.close();
     }
   });
@@ -62,11 +63,13 @@ describe("readiness", () => {
       const wallet = await h.request("POST", "/wallets", { body: walletBody() });
       expect(wallet.status).toBe(201);
     } finally {
+      await assertLedgerInvariant(h.db.sql);
       await h.close();
     }
   });
 });
 
+// No database at all here, so the ledger invariant does not apply.
 describe("PostgreSQL unreachable", () => {
   let container: Container;
   let app: INestApplication;
@@ -132,8 +135,10 @@ describe("lock timeout", () => {
   beforeAll(async () => {
     h = await createHttpHarness({ config: { DB_LOCK_TIMEOUT_MS: 300 } });
   });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
+  });
   afterAll(async () => {
-    await assertLedgerInvariant(h.db.sql);
     await h.close();
   });
 

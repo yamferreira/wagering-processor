@@ -1,3 +1,4 @@
+import { SeededRandom } from "../../support/random";
 import { describe, expect, test } from "bun:test";
 import { InvariantViolationError, ValidationError } from "../../../src/domain/errors";
 import { LedgerDirection, type WalletLedgerEntry } from "../../../src/domain/ledger/wallet-ledger-entry";
@@ -146,12 +147,13 @@ describe("Wallet invariant: balance == Σ ledger, never negative, version tracks
 
   test("1000 random operations", () => {
     const random = prng(20261105);
+    const amounts = new SeededRandom(20261105n);
     const { wallet, openingEntry } = openWith("100.00");
     const entries: WalletLedgerEntry[] = openingEntry ? [openingEntry] : [];
     let rejected = 0;
 
     for (let i = 0; i < 1000; i++) {
-      const cents = BigInt(1 + Math.floor(random() * 5000));
+      const cents = 1n + amounts.below(5000n);
       const money = Money.ofMinorUnits(cents, "BRL");
       const props = { ledgerEntryId: nextId("entry"), transactionId: nextId("tx"), money, at: t0 };
       if (random() < 0.55) {

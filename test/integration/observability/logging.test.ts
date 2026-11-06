@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { assertLedgerInvariant } from "../../support/invariants";
 import type { Logger } from "../../../src/application/ports/logger";
 import type { Runtime } from "../../../src/infrastructure/app/runtime";
 import { createLogger, REDACTED } from "../../../src/infrastructure/observability/logger";
@@ -46,6 +47,9 @@ describe("structured logging", () => {
     logger = createLogger({ level: "debug", destination: capture });
     runtime = await h.start({ ROLES: ["api", "consumer", "pending-worker"] }, { logger });
     base = `http://127.0.0.1:${runtime.port}`;
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
   });
   afterAll(async () => {
     await h.close();

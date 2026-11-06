@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { SubmitWagerCommand } from "../../src/application/use-cases/submit-wager-transaction";
 import { spawnCluster } from "../support/cluster";
 import { waitForQuiescence } from "../support/drain";
 import { type Instance, killAllInstances } from "../support/instances";
 import { assertLedgerInvariant } from "../support/invariants";
+import { pendingReferenceCount } from "../support/out-of-order";
 import { fireHttp, fireSqs } from "../support/load";
 import { createMessagingHarness, type MessagingHarness } from "../support/messaging";
 import { drainQueue } from "../support/sqs";
@@ -25,6 +26,9 @@ describe("3 instances against the same wallets", () => {
     h = await createMessagingHarness({ label: "multi", queues: { visibilityTimeoutSeconds: 5 } });
     instances = await spawnCluster(h, 3);
     urls = instances.map((i) => i.baseUrl);
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
   });
   afterAll(async () => {
     await Promise.all(instances.map((i) => i.stop()));
@@ -113,6 +117,8 @@ describe("3 instances against the same wallets", () => {
       expect(report.storedBalance.amount).toBe("190.00");
     }
     await assertLedgerInvariant(h.db.sql);
+    // References really arrived out of order (and were resolved): not a lucky in-order interleaving.
+    expect(await pendingReferenceCount(h.db.sql, wallets.map((w) => w.id))).toBeGreaterThan(0);
 
     // Outbox: 100% published, and every event reached the events queue at least once.
     const bodies = await drainQueue(h.queues.events, { idleRounds: 2 });

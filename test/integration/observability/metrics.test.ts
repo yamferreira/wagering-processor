@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { assertLedgerInvariant } from "../../support/invariants";
 import { TransientInfrastructureError, TransientReason } from "../../../src/application/errors";
 import { silentLogger } from "../../../src/application/ports/logger";
 import type { Runtime } from "../../../src/infrastructure/app/runtime";
@@ -54,6 +55,9 @@ describe("GET /metrics", () => {
       { logger: silentLogger },
     );
     base = `http://127.0.0.1:${runtime.port}`;
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
   });
   afterAll(async () => {
     await h.close();
