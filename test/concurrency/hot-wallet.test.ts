@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { SubmitWagerCommand } from "../../src/application/use-cases/submit-wager-transaction";
+import { Money } from "../../src/domain/money/money";
 import { assertLedgerInvariant } from "../support/invariants";
 import { CTX, createUseCaseHarness, type UseCaseHarness, wagerCommand } from "../support/use-cases";
 
@@ -22,7 +23,12 @@ describe("hot wallet", () => {
     await h.close();
   });
 
-  const amount = (cents: number) => `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+  /** Random money between `min` and `min + span` minor units: the draw is an integer index, converted to
+   *  bigint before it becomes money; formatting goes through Money (never float arithmetic). */
+  const randomMoney = (draw: () => number, min: bigint, span: number): string => {
+    const offset = BigInt(Math.floor(draw() * span));
+    return Money.ofMinorUnits(min + offset, "BRL").amount;
+  };
 
   test("200 concurrent mixed operations keep balance == ledger and balance >= 0", async () => {
     const wallet = await h.createWallet.execute(
@@ -35,7 +41,7 @@ describe("hot wallet", () => {
     const commands: SubmitWagerCommand[] = [];
     const bets: SubmitWagerCommand[] = [];
     for (let i = 0; i < 100; i++) {
-      const bet = wagerCommand(wallet, { roundId: `r-${i}`, money: { amount: amount(100 + Math.floor(random() * 1_900)), currency: "BRL" } });
+      const bet = wagerCommand(wallet, { roundId: `r-${i}`, money: { amount: randomMoney(random, 100n, 1_900), currency: "BRL" } });
       bets.push(bet);
       commands.push(bet);
     }
@@ -46,7 +52,7 @@ describe("hot wallet", () => {
         referenceExternalTransactionId: target.externalTransactionId,
         money: { amount: money, currency: "BRL" },
       });
-    for (let i = 0; i < 40; i++) commands.push(ref("WIN", bets[i]!, amount(50 + Math.floor(random() * 3_000))));
+    for (let i = 0; i < 40; i++) commands.push(ref("WIN", bets[i]!, randomMoney(random, 50n, 3_000)));
     for (let i = 40; i < 60; i++) commands.push(ref("LOSS", bets[i]!, "0.00"));
     for (let i = 60; i < 80; i++) commands.push(ref("REFUND", bets[i]!));
     for (let i = 80; i < 100; i++) commands.push(ref("ROLLBACK", bets[i]!));
@@ -101,8 +107,7 @@ describe("hot wallet", () => {
        WHERE t.wallet_id = ${wallet.id} AND t.status = 'PROCESSED'`;
     expect(summary.balance).toBe(expected.balance);
     await assertLedgerInvariant(h.db.sql, [wallet.id]);
-    console.log(
-      `[hot-wallet] ${commands.length} ops in ${elapsed.toFixed(0)} ms; final balance ${summary.balance}; ${summary.entries - 1} movements`,
-    );
+    const elapsedMs = Math.round(elapsed);
+    console.log(`[hot-wallet] ${commands.length} ops in ${elapsedMs} ms; ${summary.entries - 1} movements; final balance:`, summary.balance);
   });
 });

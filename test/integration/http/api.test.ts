@@ -77,6 +77,7 @@ describe("POST /wallets", () => {
   });
 
   test.each([
+    // audit-money: allow — proves a JSON number amount is rejected with 400
     ["amount as a JSON number", { playerId: "p", initialBalance: { amount: 25.5, currency: "BRL" } }, "VALIDATION_ERROR"],
     ["amount without decimals", { playerId: "p", initialBalance: money("10") }, "INVALID_MONEY"],
     ["negative amount", { playerId: "p", initialBalance: money("-1.00") }, "INVALID_MONEY"],
@@ -245,6 +246,7 @@ describe("POST /wagering/transactions — status matrix", () => {
   });
 
   test.each([
+    // audit-money: allow — proves a JSON number amount is rejected with 400
     ["amount as a JSON number", { money: { amount: 25, currency: "BRL" } }],
     ["scientific notation", { money: money("1e2") }],
     ["three decimals", { money: money("1.005") }],

@@ -87,6 +87,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Money audit (no float/number money in src, tests or scripts)
+        run: bun run audit:money
+
       - name: Unit tests
         run: bun run test:unit
 

@@ -47,6 +47,7 @@ describe("parseWagerEnvelope (§10)", () => {
     ["wrong type", JSON.stringify({ ...validEnvelope, type: "Something" })],
     ["unknown field", JSON.stringify({ ...validEnvelope, extra: 1 })],
     ["missing idempotencyKey", JSON.stringify({ ...validEnvelope, data: { ...validEnvelope.data, idempotencyKey: undefined } })],
+    // audit-money: allow — proves a numeric amount in the envelope goes to the DLQ
     ["numeric amount", JSON.stringify({ ...validEnvelope, data: { ...validEnvelope.data, money: { amount: 25, currency: "BRL" } } })],
     ["bad occurredAt", JSON.stringify({ ...validEnvelope, occurredAt: "yesterday" })],
   ])("rejects %s as InvalidEnvelopeError", (_label, body) => {

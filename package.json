@@ -39,6 +39,7 @@
     "sqs:setup": "bun run scripts/setup-queues.ts",
     "test:all": "bun run test && bun run test:concurrency",
     "sqs:send": "bun run scripts/send-message.ts",
-    "test:load": "bun run test/load/load.ts"
+    "test:load": "bun run test/load/load.ts",
+    "audit:money": "bun run scripts/audit-money.ts"
   }
 }
