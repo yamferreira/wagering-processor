@@ -272,15 +272,22 @@ A lista completa, com validação, está em `src/infrastructure/config/config.ts
   visibilidade delas) e fecha o pool. No Windows, um processo filho criado pelo Bun recebe `kill("SIGTERM")`
   como término imediato, por isso o harness de testes usa IPC lá. O CI valida o SIGTERM real em Linux.
 
+## Uso de IA
+
+A IA foi usada como assistente de desenvolvimento e de revisão. As decisões de arquitetura e as regras de
+negócio foram validadas por testes contra PostgreSQL e SQS reais (LocalStack), por testes de concorrência
+com múltiplos processos, pelo CI em Linux e por uma revisão independente (`docs/ARCHITECTURE.md`, seção 13).
+
 ## Estrutura
 
 ```
 src/domain           TypeScript puro: Money, Wallet, WalletLedgerEntry, WagerTransaction, decide(), eventos
 src/application      use cases e portas (repositórios, transação, publisher, métricas, logger, clock, ids)
 src/infrastructure   MikroORM + migrations, Nest (HTTP), SQS (consumidor, publisher), workers, observabilidade
-test/unit            domínio e aplicação, sem I/O
+test/unit            domínio, aplicação e workers, sem I/O
 test/integration     PostgreSQL + LocalStack reais
 test/concurrency     paralelismo real e processos reais (crash, restart, 3 instâncias)
 test/load            teste de carga
 scripts/             migrations, filas, envio de mensagem de exemplo
+Dockerfile           imagem do serviço (profile app do docker compose)
 ```

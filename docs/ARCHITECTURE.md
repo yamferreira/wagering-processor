@@ -1005,11 +1005,17 @@ andamento. O primeiro run em Linux passou sem nenhuma correção específica de 
   (erro permanente). Uma nova mensagem com a mesma Idempotency-Key recebe o replay do FAILED e é confirmada
   (ack), sem nova cópia na DLQ: a transação já está registrada como FAILED, auditável e contada na métrica.
 
-## 13. Revisão final independente
+## 13. Revisão independente automatizada
 
-Um revisor que não participou da implementação conferiu, item por item, §5 (restrições invioláveis), §13
-(testes obrigatórios) e §14 (falhas eliminatórias) contra o código e o corpo dos testes. **Veredito:
-nenhum item violado; todos os eliminatórios cumpridos.** Os 6 achados de força de prova e de
+A revisão foi feita por **agentes de IA sem contexto da implementação**: cada um recebeu só o enunciado,
+o repositório e a sua tarefa, não viu o trabalho do outro e não participou do desenvolvimento. Todo achado
+foi conferido contra o código e, no caso dos bugs, reproduzido por um teste ou script antes de ser aceito.
+As correções seguiram a mesma regra do resto do projeto: primeiro o teste que falha, depois a correção.
+
+### 13.1 Primeira rodada: restrições invioláveis, testes obrigatórios e falhas eliminatórias
+
+Conferência item a item de §5, §13 e §14 do enunciado contra o código e o corpo dos testes.
+**Veredito: nenhum item violado; todos os eliminatórios cumpridos.** Os 6 achados de força de prova e de
 endurecimento foram corrigidos:
 
 | # | Achado | Correção |
@@ -1020,6 +1026,33 @@ endurecimento foram corrigidos:
 | 4 | Invariante final não rodava ao fim de **todo** teste | `afterEach(assertLedgerInvariant)` em todos os arquivos que tocam wallets. Exceções explícitas e comentadas: `sqs.test` (sem banco), `migrations.test` (só schema), "PostgreSQL inacessível" (sem banco) e as wallets corrompidas de propósito em `reconciliation-divergence` |
 | 5 | Schema não amarrava o lançamento à transação | trigger `ledger_check_transaction` (§5.2), com 5 testes de constraint |
 | 6 | Centavos sorteados com aritmética `number` em 2 testes | PRNG em `bigint` (`test/support/random.ts`); `audit:money` passou a detectar `BigInt(Math.…)`/`BigInt(… * …)` e variáveis `cents` |
+
+### 13.2 Auditoria final: conformidade frase a frase e caça a bugs
+
+Dois agentes independentes:
+
+- **Conformidade:** 177 frases normativas extraídas de §1 a §14, cada uma com implementação, teste e
+  veredito: 173 cumpridas, 4 parciais e nenhuma descumprida.
+- **Bugs e casos de borda:** cada suspeita só contou como bug depois de reproduzida. Foram 9 bugs
+  confirmados, nenhum eliminatório. Em nenhum cenário houve débito ou crédito duplicado, saldo negativo
+  ou divergência entre saldo e ledger. As suspeitas que não se confirmaram (corrida entre o worker e a
+  chegada da referência, cadeias de reversão, mensagens malformadas, valores no limite, SQS fora do ar,
+  paginação com inserts concorrentes) ficaram cobertas pelos testes existentes.
+
+| Achado | Correção |
+|---|---|
+| Um item com erro permanente abortava a rodada do worker de PENDING_REFERENCE e, por estar sempre primeiro, travava o lote para sempre | isolamento por item: erro transitório adia só o item, erro permanente o grava como FAILED (§9.4) |
+| Uma reversão esgotava as tentativas como `REFERENCE_NOT_FOUND` enquanto a referência existia e ainda estava pendente; `ROLLBACK(WIN) → WIN(BET) → BET` terminava em 120.00 em vez de 90.00 | a espera por uma referência em andamento não gasta tentativas; o dependente se resolve quando ela fica terminal (§4.5, A7) |
+| Uma referência que terminava FAILED não acordava os dependentes | wake-up em qualquer estado terminal: PROCESSED, REJECTED e FAILED (A28) |
+| No SIGTERM, a mensagem entregue ao long poll aberto não voltava para a fila e ficava invisível por 30 s | o `stop()` espera o loop inteiro do consumidor (§9.2) |
+| Um crédito além de `NUMERIC(20,2)` virava FAILED/500 | rejeição de negócio `BALANCE_LIMIT_EXCEEDED` (422, §4.2) |
+| A primeira resposta de FAILED tinha corpo diferente do replay; a 422 não tinha o campo `failureCode` | o mesmo construtor de corpo nos dois casos; `failureCode` explícito na 422 (§8.2) |
+| Eventos publicados em lote sem o atributo `eventType` | `sendBatch` envia os atributos (§9.3) |
+| O `stop()` dos workers esperava o intervalo ocioso ou o backoff inteiro | as esperas são interrompidas na hora |
+| A métrica prometida para wallet inexistente pela SQS não existia; o log do worker não tinha `providerId` | `unknown_wallet_messages_total` (§11.2) e `providerId` no log (§11.1) |
+| Parciais da spec restantes: `Money.equals` entre moedas, reconciliação com giro acima de `NUMERIC(20,2)`, atraso do backoff da SQS sem medição, validações da fila provadas no use case compartilhado | registrados como limitações conhecidas (§12) |
+| Uma BET só pode ser revertida uma vez no total, mais restrito que o texto literal ("pelo mesmo tipo") | mantido: interpretação A4, que evita crédito duplicado |
+| Referências a arquivos de planejamento fora do repositório e uma referência cruzada errada (A25 no lugar de A28) | removidas e corrigidas |
 
 ## Apêndice A — Interpretações da especificação (A1–A32)
 
