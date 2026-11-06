@@ -195,10 +195,10 @@ Ordem de avaliação (a primeira regra que falha decide):
 
 1. `playerId` ≠ dono da wallet → `WALLET_PLAYER_MISMATCH`; moeda ≠ moeda da wallet → `CURRENCY_MISMATCH`.
 2. Se há referência:
-   - não encontrada → `PENDING_REFERENCE`;
+   - não encontrada → `PENDING_REFERENCE` (`waitingFor: REFERENCE_MISSING`, cada retry gasta tentativa);
    - tipo não permitido → `REFERENCE_KIND_NOT_ALLOWED`. Permitidos: WIN/LOSS/REFUND → BET; ROLLBACK → BET, WIN, REFUND;
    - provider, player, wallet, moeda ou rodada divergentes → `REFERENCE_MISMATCH` + `details.field`;
-   - referência ainda em PENDING/PENDING_REFERENCE → `PENDING_REFERENCE` (A7); REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`;
+   - referência ainda em PENDING/PENDING_REFERENCE → `PENDING_REFERENCE` (`waitingFor: REFERENCE_IN_FLIGHT`, não gasta tentativa, A7); REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`;
    - reversão com valor diferente → `REFERENCE_AMOUNT_MISMATCH`;
    - referência já revertida → `REFERENCE_ALREADY_REVERSED`. Vale para reversões (A4) e para WIN/LOSS sobre BET revertida (A6).
 3. LOSS → `RECORD_ONLY`, sem lançamento e sem incrementar a versão.
@@ -214,6 +214,16 @@ não prevista na especificação, que só pegaria WINs com referência.
 2+4+8+…+256+300+300 = 1110 s (≈ 18,5 min) até `REJECTED / REFERENCE_NOT_FOUND`. A primeira
 marcação agenda sem contar tentativa; o retry nº `maxAttempts` que ainda não encontra a
 referência rejeita. Os parâmetros são configuráveis por env (T16).
+
+**Referência que existe mas ainda está pendente (A7):** o dependente **não** gasta tentativas
+enquanto a referência está em PENDING_REFERENCE; ele espera a referência ficar terminal. Isso
+termina sempre, porque a própria referência tem orçamento finito: quando ela fica terminal, o
+wake-up (A28) acorda o dependente, que é aplicado (referência PROCESSED) ou rejeitado com
+`REFERENCE_NOT_PROCESSED` (referência REJECTED ou FAILED). Um re-check a cada `cap` fica como rede
+de segurança. Assim, `REFERENCE_NOT_FOUND` só aparece quando a referência de fato nunca chegou.
+Sem essa regra, `ROLLBACK(WIN) → WIN(BET) → BET` podia esgotar o ROLLBACK enquanto o WIN esperava a
+BET: o ROLLBACK era rejeitado como "referência inexistente", o WIN era creditado depois e o saldo
+terminava 30.00 acima do esperado pelo provedor (teste de integração dedicado).
 
 **Justificativa do limite:** entregas fora de ordem entre provedores costumam se resolver em
 segundos ou minutos. Esperar 18 min cobre filas atrasadas e retries do provedor sem manter
@@ -687,10 +697,13 @@ Cada rodada de `ResolvePendingReference` usa dois tipos de transação curta, nu
    submissão. O UPDATE usa `WHERE status = PENDING_REFERENCE` como guarda adicional.
 
 - **Resultados:** PROCESSED (saldo + ledger + `WagerTransactionProcessed`/`WalletBalanceChanged`); REJECTED
-  (regra de negócio, ou `REFERENCE_NOT_FOUND` ao esgotar `PENDING_REF_MAX_ATTEMPTS`, com
-  `WagerTransactionRejected`); ou reagendado com `min(base·2ⁿ, cap)`, **sem** novo evento
-  (`WagerTransactionPendingReference` saiu quando a transação ficou pendente).
-- **Wake-up (A28):** toda transação que fica terminal, na submissão ou no worker, executa na mesma
+  (regra de negócio, ou `REFERENCE_NOT_FOUND` ao esgotar `PENDING_REF_MAX_ATTEMPTS` com a referência
+  ausente, com `WagerTransactionRejected`); ou reagendado, **sem** novo evento
+  (`WagerTransactionPendingReference` saiu quando a transação ficou pendente): com `min(base·2ⁿ, cap)`
+  gastando uma tentativa se a referência não existe, ou no `cap` sem gastar tentativa se ela existe
+  e ainda está pendente (§4.5).
+- **Wake-up (A28):** toda transação que fica terminal (PROCESSED, REJECTED ou FAILED), na submissão, no
+  registro best-effort de FAILED ou no worker, executa na mesma
   transação SQL `UPDATE … SET next_reference_attempt_at = now WHERE status = PENDING_REFERENCE AND
   provider_id = ? AND reference_external_transaction_id = ?` (`wager_tx_pending_by_reference_idx`). O
   dependente é resolvido na próxima rodada do worker (`PENDING_REF_POLL_MS`), em vez de esperar o backoff.
@@ -917,7 +930,7 @@ Pontos em que o enunciado do desafio é ambíguo, com a interpretação adotada.
 | A4 | Reversão única | Uma BET é revertida no máximo uma vez, por REFUND **ou** ROLLBACK (índice parcial). `BET → REFUND → ROLLBACK(REFUND)` é permitido. ROLLBACK de LOSS, ROLLBACK ou OPENING → `REFERENCE_KIND_NOT_ALLOWED`. |
 | A5 | WIN/LOSS com referência | Referência opcional; se vier, valida provider, player, wallet, moeda, rodada e tipo BET. Ausente no banco → PENDING_REFERENCE. Vários WIN por BET são permitidos e o valor é livre. |
 | A6 | Liquidação × reversão | WIN de BET já revertida → `REFERENCE_ALREADY_REVERSED`. REFUND/ROLLBACK de BET que já tem WIN é **permitido** (risco documentado em §4.5: o provedor deve reverter o WIN antes). |
-| A7 | Referência não terminal ou falha | Referência em PENDING_REFERENCE → o dependente também espera. Referência REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`. |
+| A7 | Referência não terminal ou falha | Referência em PENDING_REFERENCE → o dependente também espera, **sem gastar tentativas**, até a referência ficar terminal. Referência REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`. |
 | A8 | Payload estruturalmente inválido | 400 sem persistir: BET com referência, autorreferência, kind OPENING, providerId reservado `internal`. |
 | A9 | Wallet inexistente | HTTP 404 `WALLET_NOT_FOUND` sem consumir a key. Na SQS: erro de negócio terminal (inbox + ack + métrica). |
 | A10 | O que vira REJECTED | Toda rejeição de regra após a wallet ser encontrada. Consome a key, grava o saldo observado e não gera lançamento. |
@@ -948,7 +961,7 @@ Pontos em que o enunciado do desafio é ambíguo, com a interpretação adotada.
 | A25 | Consumidor de eventos | Consumidor de auditoria (teste) com inbox (`consumerName = events-audit`, `messageId = eventId`). |
 | A26 | `MessageGroupId` de entrada | Produtor deveria usar `walletId`, mas a correção não depende disso (testes usam groups aleatórios). |
 | A27 | Erros no consumidor | Negócio → ack. Transitório → `ChangeMessageVisibility` com backoff. Permanente → DLQ imediata. Limite de recebimentos na aplicação + redrive como rede de segurança. Detalhe em §9. |
-| A28 | Limites de PENDING_REFERENCE | 10 tentativas, base 2s, fator 2, cap 5 min (configurável), mais wake-up imediato dos dependentes quando a referência é processada. |
+| A28 | Limites de PENDING_REFERENCE | 10 tentativas, base 2s, fator 2, cap 5 min (configurável), gastas só enquanto a referência não existe. Wake-up imediato dos dependentes quando a referência fica terminal (PROCESSED, REJECTED ou FAILED). |
 | A29 | Outbox | Sem limite de tentativas; backoff 1s→60s com jitter. Retenção/limpeza fora de escopo. |
 | A30 | Métrica de conflito de lock | Histograma de espera de lock + contadores de `lock_timeout`, deadlock e version mismatch. |
 | A31 | Instância | Um processo `bun run start`; `ROLES` separa API, consumidor, publisher e worker. |

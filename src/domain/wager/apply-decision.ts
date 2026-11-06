@@ -54,6 +54,13 @@ export function applyDecision(
       tx.reject(decision.code, ctx.at, wallet.balance);
       return { status: Status.Rejected, code: decision.code };
     case "PENDING_REFERENCE": {
+      if (decision.waitingFor === "REFERENCE_IN_FLIGHT") {
+        // The reference exists and has its own finite budget: wait for it without spending ours.
+        // Its terminal transition wakes this one up (A28); the cap-delayed re-check is a safety net.
+        const nextAttemptAt = new Date(ctx.at.getTime() + ctx.retryPolicy.maxDelayMs);
+        tx.markPendingReference(nextAttemptAt, { spendAttempt: false });
+        return { status: Status.PendingReference, nextAttemptAt };
+      }
       const isRetry = tx.status === Status.PendingReference;
       const retryNumber = isRetry ? tx.referenceAttempts + 1 : 0;
       if (isRetry && ctx.retryPolicy.isExhausted(retryNumber)) {

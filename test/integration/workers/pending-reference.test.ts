@@ -164,6 +164,78 @@ describe("PENDING_REFERENCE resolution", () => {
     expect(await balance(h, wallet.id)).toBe("75.00");
     expect(await ledger(h, wallet.id)).toEqual(["CREDIT 100.00", "DEBIT 25.00", "CREDIT 50.00", "DEBIT 50.00"]);
   });
+
+  test.each([
+    ["REJECTED", "a BET without funds"],
+    ["FAILED", "a WIN hit by a permanent internal error"],
+  ])("a reference that ends %s (%s) wakes its dependent at once: REJECTED with REFERENCE_NOT_PROCESSED", async (ending) => {
+    const wallet = await h.openWallet("10.00");
+    const reference = ending === "REJECTED" ? bet(wallet, "50.00") : referencing(wallet, "WIN", bet(wallet), "5.00");
+    const dependent = referencing(wallet, "ROLLBACK", reference);
+    expect((await post(slow, dependent)).status).toBe(202); // first retry only in 60 s
+
+    if (ending === "FAILED") h.faults.throwAt("submit:before-outbox-insert", () => new Error("simulated defect"), 1);
+    const outcome = await h.container.submit.execute(reference, CTX).then(
+      (result) => result.transaction.status as string,
+      () => "FAILED",
+    );
+    expect(outcome).toBe(ending);
+    expect((await txRow(h, reference))?.status).toBe(ending);
+
+    const row = await waitFor(async () => {
+      const current = await txRow(h, dependent);
+      return current?.status === "REJECTED" ? current : undefined;
+    }, { description: "dependent woken up", timeoutMs: 5_000 });
+    expect(row.failure_code).toBe("REFERENCE_NOT_PROCESSED");
+    expect(await eventsOf(h, row.id)).toEqual(["WagerTransactionPendingReference", "WagerTransactionRejected"]);
+    expect(await balance(h, wallet.id)).toBe("10.00");
+  });
+});
+
+describe("PENDING_REFERENCE: a reference that exists but is still pending", () => {
+  let h: MessagingHarness;
+  let fast: Runtime;
+
+  beforeAll(async () => {
+    h = await createMessagingHarness({ label: "pending-in-flight" });
+    // Budget: 3 retries, 1 s apart (each transaction gives up ~3 s after it first became pending).
+    fast = await h.start({
+      ROLES: ["api", "pending-worker"],
+      PENDING_REF_BASE_MS: 1_000,
+      PENDING_REF_CAP_MS: 1_000,
+      PENDING_REF_MAX_ATTEMPTS: 3,
+      PENDING_REF_POLL_MS: 50,
+    });
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql);
+  });
+  afterAll(async () => {
+    await h.close();
+  });
+
+  test("ROLLBACK(WIN) → WIN(BET) → BET: the ROLLBACK waits for the WIN without spending attempts and the balance ends at 90.00", async () => {
+    const wallet = await h.openWallet("100.00");
+    const theBet = bet(wallet, "10.00");
+    const win = referencing(wallet, "WIN", theBet, "30.00");
+    const rollbackWin = referencing(wallet, "ROLLBACK", win, "30.00");
+
+    const startedAt = Date.now();
+    expect((await post(fast, rollbackWin)).status).toBe(202); // its own budget would end at ~3 s
+    await Bun.sleep(1_500); // one retry spent while the WIN is really missing
+    expect((await post(fast, win)).status).toBe(202); // the WIN's budget ends at ~4.5 s
+    await Bun.sleep(3_700 - (Date.now() - startedAt)); // past the ROLLBACK's budget, before the WIN's
+
+    const waiting = await txRow(h, rollbackWin);
+    expect(waiting?.status).toBe("PENDING_REFERENCE");
+    expect(waiting!.reference_attempts).toBe(1); // only the retry made while the WIN was missing
+
+    expect((await post(fast, theBet)).status).toBe(201);
+    await waitFor(async () => (await statusOf(h, rollbackWin)) === "PROCESSED", { description: "cascade", timeoutMs: 10_000 });
+    expect(await statusOf(h, win)).toBe("PROCESSED");
+    expect(await balance(h, wallet.id)).toBe("90.00");
+    expect(await ledger(h, wallet.id)).toEqual(["CREDIT 100.00", "DEBIT 10.00", "CREDIT 30.00", "DEBIT 30.00"]);
+  });
 });
 
 describe("concurrent PENDING_REFERENCE workers", () => {

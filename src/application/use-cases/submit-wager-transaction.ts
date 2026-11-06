@@ -194,15 +194,20 @@ export class SubmitWagerTransaction {
     return props;
   }
 
-  /** Best effort (A16): record the accepted transaction as FAILED for auditability. */
+  /**
+   * Best effort (A16): record the accepted transaction as FAILED for auditability, and wake up the
+   * transactions waiting for it (they become REJECTED with REFERENCE_NOT_PROCESSED).
+   */
   private async recordFailure(props: CreateWagerTransactionProps): Promise<string | undefined> {
     try {
       return await this.deps.runner.run(async (repos) => {
         if (!(await repos.wallets.findById(props.walletId))) return undefined;
         if (await findExisting(repos, props)) return undefined;
         const tx = WagerTransaction.create(props);
-        tx.fail(FailureCode.InternalInvariantViolation, this.deps.clock.now());
+        const now = this.deps.clock.now();
+        tx.fail(FailureCode.InternalInvariantViolation, now);
         await repos.transactions.insert(tx);
+        await wakeDependentsOf(repos, tx, now); // A28: FAILED is terminal too
         return tx.id;
       });
     } catch {
