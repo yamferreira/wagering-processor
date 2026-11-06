@@ -12,11 +12,13 @@ export interface PollingWorkerOptions {
 /**
  * Runs `round()` in a loop: immediately again while it reports more work, otherwise after
  * `idleDelayMs`. Errors are logged and retried with exponential backoff. `stop()` lets the
- * current round finish (rounds are single short transactions) and resolves when it did.
+ * current round finish (rounds are single short transactions), never waits for the idle delay or
+ * the backoff, and resolves as soon as the loop has ended.
  */
 export class PollingWorker {
   private running = false;
   private loop: Promise<void> | undefined;
+  /** Ends the current sleep early; set only while the loop is sleeping. */
   private wake: (() => void) | undefined;
 
   constructor(
@@ -53,6 +55,8 @@ export class PollingWorker {
           "worker round failed",
         );
       }
+      // stop() during the round: do not start the sleep (nothing would wake it up).
+      if (!this.running) break;
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, delay);
         this.wake = () => {

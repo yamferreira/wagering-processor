@@ -54,9 +54,8 @@ export class WagerTransactionConsumer {
   private running = false;
   private loop: Promise<void> | undefined;
   private currentPoll: Promise<ReceivedMessage[]> | undefined;
-  /** Resolved by stop(): interrupts the loop's waits (capacity, receive backoff). */
-  private stopSignal: Promise<void> = Promise.resolve();
-  private signalStop: () => void = () => {};
+  /** Ends the loop's current wait early (full capacity, receive backoff); set only while it waits. */
+  private wakeLoop: (() => void) | undefined;
   /** Messages the loop received after stop() and handed straight back. */
   private handedBack = 0;
   private readonly inFlight = new Map<string, { message: ReceivedMessage; done: Promise<void>; released: boolean }>();
@@ -77,16 +76,13 @@ export class WagerTransactionConsumer {
     if (this.running) return;
     this.running = true;
     this.handedBack = 0;
-    this.stopSignal = new Promise<void>((resolve) => {
-      this.signalStop = resolve;
-    });
     this.loop = this.run();
   }
 
   async stop(): Promise<{ completed: number; released: number }> {
     if (!this.running) return { completed: 0, released: 0 };
     this.running = false;
-    this.signalStop();
+    this.wakeLoop?.();
     // The open long poll is NOT aborted: aborting only cancels the client side, while the broker
     // keeps the ReceiveMessage open and would deliver a released message to this dead poll (making
     // it invisible for a full visibility timeout). It ends by itself within waitTimeSeconds, and
@@ -123,7 +119,7 @@ export class WagerTransactionConsumer {
     while (this.running) {
       const capacity = this.options.concurrency - this.inFlight.size;
       if (capacity <= 0) {
-        await Promise.race([...[...this.inFlight.values()].map((entry) => entry.done), this.stopSignal]);
+        await this.waitUntil([...this.inFlight.values()].map((entry) => entry.done));
         continue;
       }
       let batch: ReceivedMessage[];
@@ -136,7 +132,7 @@ export class WagerTransactionConsumer {
         pollFailures++;
         const delay = Math.min(250 * 2 ** pollFailures, 10_000);
         this.deps.logger.warn({ ...errorFields(error), delayMs: delay }, "sqs receive failed; backing off");
-        await this.pause(delay);
+        await this.waitUntil([], delay);
         continue;
       } finally {
         this.currentPoll = undefined;
@@ -264,14 +260,19 @@ export class WagerTransactionConsumer {
     await this.deps.input.delete(message.receiptHandle);
   }
 
-  /** Sleeps for `ms`, or less if stop() is called meanwhile. */
-  private pause(ms: number): Promise<void> {
+  /** Resolves when any of `events` settles, after `timeoutMs` (if given) or when stop() is called. */
+  private waitUntil(events: Promise<unknown>[], timeoutMs?: number): Promise<void> {
+    if (!this.running) return Promise.resolve();
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      void this.stopSignal.then(() => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
         clearTimeout(timer);
+        if (this.wakeLoop === done) this.wakeLoop = undefined;
         resolve();
-      });
+      };
+      this.wakeLoop = done;
+      if (timeoutMs !== undefined) timer = setTimeout(done, timeoutMs);
+      for (const event of events) event.then(done, done);
     });
   }
 }

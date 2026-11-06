@@ -687,7 +687,9 @@ COMMIT
   `MessageGroupId = aggregateId` (wallet para `WalletBalanceChanged`, transação para os eventos de
   transação). A ordem entre lotes/publishers não é garantida: consumidores usam `walletVersion` e `eventId`.
 - **Loop:** `PollingWorker` repete imediatamente enquanto o lote vem cheio e espera `OUTBOX_POLL_MS` quando
-  não; erros (ex.: banco fora) entram em backoff exponencial. `stop()` deixa a rodada atual terminar.
+  não; erros (ex.: banco fora) entram em backoff exponencial. `stop()` deixa a rodada atual terminar e
+  nunca espera o intervalo ocioso nem o backoff (testado): o shutdown não atrasa até `*_POLL_MS`, nem 10 s
+  com o banco fora do ar.
 - **Consumidor de eventos de referência (A25):** `test/support/event-audit-consumer.ts` aplica cada evento
   a uma projeção na mesma transação que a sua linha de inbox (`events-audit`, `messageId = eventId`). Com
   cada evento entregue 3 vezes, a projeção conta cada um exatamente uma vez.
