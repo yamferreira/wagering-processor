@@ -89,6 +89,13 @@ export class Money {
     return Money.ofMinorUnits(this.minor + other.minor, this.currency);
   }
 
+  /** True when `this + other` is still representable (NUMERIC(20,2)); `add` would throw otherwise. */
+  canAdd(other: Money): boolean {
+    this.assertSameCurrency(other);
+    const sum = this.minor + other.minor;
+    return sum <= MAX_MINOR_UNITS && sum >= -MAX_MINOR_UNITS;
+  }
+
   subtract(other: Money): Money {
     this.assertSameCurrency(other);
     return Money.ofMinorUnits(this.minor - other.minor, this.currency);

@@ -4,7 +4,7 @@ import { LedgerDirection } from "../../../src/domain/ledger/wallet-ledger-entry"
 import { Money } from "../../../src/domain/money/money";
 import { applyDecision } from "../../../src/domain/wager/apply-decision";
 import { type Decision, decide, type ReferenceLookup } from "../../../src/domain/wager/decide";
-import { FailureCode } from "../../../src/domain/wager/failure-code";
+import { FAILURE_CODE_CATALOG, FailureCode, ProviderAction } from "../../../src/domain/wager/failure-code";
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status } from "../../../src/domain/wager/kinds";
 import { ReferenceRetryPolicy } from "../../../src/domain/wager/reference-retry-policy";
 import { WagerTransaction } from "../../../src/domain/wager/wager-transaction";
@@ -259,6 +259,30 @@ describe("decide — reference must belong to the same provider, player, wallet,
   ])("%s mismatch → REFERENCE_MISMATCH", (field, overrides) => {
     const decision = decide(referencing(Kind.Refund), wallet(), found(bet(overrides)));
     expect(decision as unknown).toEqual({ type: "REJECT", code: FailureCode.ReferenceMismatch, details: { field } });
+  });
+});
+
+describe("decide — balance limit of NUMERIC(20,2)", () => {
+  const MAX = "999999999999999999.99";
+
+  test("a WIN that would exceed the largest representable balance → BALANCE_LIMIT_EXCEEDED", () => {
+    expect(decide(buildTx({ kind: Kind.Win, money: brl("0.01") }), wallet(MAX), undefined)).toEqual(
+      rejectedWith(FailureCode.BalanceLimitExceeded),
+    );
+  });
+
+  test("a credit by reversal (ROLLBACK of a BET) is limited the same way", () => {
+    const decision = decide(referencing(Kind.Rollback), wallet("999999999999999990.00"), found(bet()));
+    expect(decision).toEqual(rejectedWith(FailureCode.BalanceLimitExceeded));
+  });
+
+  test("a credit that reaches exactly the limit is applied", () => {
+    const decision = decide(buildTx({ kind: Kind.Win, money: brl("0.01") }), wallet("999999999999999999.98"), undefined);
+    expect(decision).toEqual(expect.objectContaining({ type: "APPLY", direction: LedgerDirection.Credit }));
+  });
+
+  test("the code is a business rejection the operator must handle", () => {
+    expect(FAILURE_CODE_CATALOG[FailureCode.BalanceLimitExceeded].providerAction).toBe(ProviderAction.ContactOperator);
   });
 });
 

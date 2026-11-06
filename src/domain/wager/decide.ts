@@ -71,6 +71,7 @@ export function decide(tx: WagerTransaction, wallet: Wallet, lookup: ReferenceLo
   if (direction === LedgerDirection.Debit && !wallet.canDebit(tx.money)) {
     return reject(tx.isReversal() ? FailureCode.ReversalInsufficientFunds : FailureCode.InsufficientFunds);
   }
+  if (direction === LedgerDirection.Credit && !wallet.canCredit(tx.money)) return reject(FailureCode.BalanceLimitExceeded);
   return { type: "APPLY", direction, reference };
 }
 

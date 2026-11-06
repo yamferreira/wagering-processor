@@ -117,6 +117,7 @@ e o reenvio com a mesma key é seguro.
 | `REFERENCE_NOT_PROCESSED` | referência terminou REJECTED/FAILED | `GIVE_UP` |
 | `REFERENCE_AMOUNT_MISMATCH` | valor da reversão ≠ valor da referência | `FIX_PAYLOAD` |
 | `REFERENCE_ALREADY_REVERSED` | referência já revertida (ou WIN sobre BET revertida, A6) | `GIVE_UP` |
+| `BALANCE_LIMIT_EXCEEDED` | crédito (WIN, REFUND, ROLLBACK de BET) levaria o saldo além de `999999999999999999.99`, o máximo de `NUMERIC(20,2)` | `CONTACT_OPERATOR` |
 | `INTERNAL_INVARIANT_VIOLATION` | erro permanente interno após o aceite (status FAILED, A16) | `CONTACT_OPERATOR` |
 
 O saldo insuficiente numa BET e numa reversão têm códigos e ações diferentes. A primeira é rotina;
@@ -203,6 +204,8 @@ Ordem de avaliação (a primeira regra que falha decide):
    - referência já revertida → `REFERENCE_ALREADY_REVERSED`. Vale para reversões (A4) e para WIN/LOSS sobre BET revertida (A6).
 3. LOSS → `RECORD_ONLY`, sem lançamento e sem incrementar a versão.
 4. Direção DEBIT sem saldo: BET → `INSUFFICIENT_FUNDS`; ROLLBACK → `REVERSAL_INSUFFICIENT_FUNDS`.
+   Direção CREDIT que passaria do máximo representável → `BALANCE_LIMIT_EXCEEDED` (422, REJECTED). O limite
+   é previsível e de negócio: não é um erro interno (FAILED/500) e não chega ao `MoneyOverflowError`.
 5. Caso contrário → `APPLY`.
 
 **Risco documentado (A6):** REFUND ou ROLLBACK de uma BET que já tem WIN é **permitido**, conforme

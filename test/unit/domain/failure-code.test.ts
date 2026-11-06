@@ -9,6 +9,7 @@ import {
 describe("FailureCode taxonomy", () => {
   test("codes are stable public strings", () => {
     expect((Object.values(FailureCode) as string[]).sort()).toEqual([
+      "BALANCE_LIMIT_EXCEEDED",
       "CURRENCY_MISMATCH",
       "INSUFFICIENT_FUNDS",
       "INTERNAL_INVARIANT_VIOLATION",

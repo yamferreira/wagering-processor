@@ -220,6 +220,25 @@ describe("POST /wagering/transactions — status matrix", () => {
     expect(replay.body.error).toEqual({ ...first.body.error, idempotentReplay: true });
   });
 
+  test("422 BALANCE_LIMIT_EXCEEDED for a credit beyond NUMERIC(20,2), not a 500/FAILED", async () => {
+    const wallet = await createWallet("999999999999999999.99");
+    const body = wager(wallet, { kind: "WIN", money: money("0.01") });
+    const first = await submit(body);
+    expect(first.status).toBe(422);
+    expect(first.body.error).toMatchObject({
+      code: "BALANCE_LIMIT_EXCEEDED",
+      providerAction: "CONTACT_OPERATOR",
+      status: "REJECTED",
+      balance: money("999999999999999999.99"),
+      idempotentReplay: false,
+    });
+    const replay = await submit(body);
+    expect(replay.status).toBe(422);
+    expect(replay.body.error).toEqual({ ...first.body.error, idempotentReplay: true });
+    const current = await h.request("GET", `/wallets/${wallet.id}`);
+    expect(current.body).toMatchObject({ balance: money("999999999999999999.99"), version: 1 }); // untouched
+  });
+
   test("409 for the same key with a different payload, and for a reused external id", async () => {
     const wallet = await createWallet();
     const body = wager(wallet);
