@@ -396,11 +396,12 @@ Paralelismo real no PostgreSQL (pools de 20 a 40 conexões, todas as operações
 | 50 wallets × 20 operações (1000 de uma vez, intercaladas) | cada wallet exata (35.00, 21 lançamentos, version 21) |
 | Lock por linha (determinístico) | com X travada, Y faz commit em < 0,9s e X recebe `LOCK_TIMEOUT` |
 
-**Throughput por processo:** medido neste ambiente (Windows + Docker), uma submissão gasta cerca de 10ms
-de CPU no próprio processo Bun (fork do EntityManager, montagem das queries e hidratação no MikroORM) e
-cerca de 33ms de latência sequencial (cerca de 12 round-trips). Com 40 em paralelo, o processo fica
-limitado por CPU (CPU ≈ wall), enquanto o PostgreSQL fica ocioso. O gargalo é por processo e escala
-horizontalmente (§9, T20); não é contenção de lock.
+**Throughput por processo:** uma submissão faz cerca de 12 round-trips e o processo fica limitado por CPU
+(CPU ≈ wall) enquanto o PostgreSQL fica ocioso. A T24 mediu a causa (`docs/LOAD-TEST.md`): pelo driver
+`pg` do MikroORM no Bun, cada round-trip consome tanta CPU quanto dura (espera ativa). O custo é por
+*espera*, não por instrução: cerca de 8 ms de CPU por requisição no Linux e 16 ms no Windows sob carga,
+32 ms em sequência e ~10 ms com 40 em paralelo. Isso **corrige** a atribuição feita no dia 2, que punha a
+culpa no trabalho do ORM (fork, queries, hidratação). Não é contenção de lock.
 
 ## 7. Idempotência
 
@@ -856,9 +857,11 @@ andamento. O primeiro run em Linux passou sem nenhuma correção específica de 
   wallet, e a correção não depende dela.
 - **Sem autenticação** (§10): só o ponto de extensão (`ProviderIdentityPort` + `AuthGuard` no-op).
 - **Um único PostgreSQL:** sem sharding nem réplicas de leitura. As consultas leem do primário.
-- **CPU do ORM no hot path:** cerca de 10ms de CPU por submissão no processo (§6.2). Escala-se com mais
-  instâncias. Se fosse preciso mais por processo, o caminho seria SQL nativo nas 10 a 12 instruções do
-  hot path, mantendo o MikroORM para o resto.
+- **CPU por submissão (driver `pg` no Bun):** 8 a 16 ms de CPU por requisição, gastos principalmente
+  esperando o banco (§6.2, `docs/LOAD-TEST.md`). Uma instância chega a ~190 req/s num runner Linux de 4
+  vCPUs. **3 instâncias no mesmo host não aumentam o throughput** (o host satura), e a hot wallet degrada
+  (p99 de ~6,5 s com 64 clientes). Melhorias, por impacto: `Bun.SQL` no hot path, menos round-trips por
+  submissão e afinidade por wallet. A escala em hosts separados não foi medida.
 - **Inbox no fallback 23505:** quando duas mensagens diferentes (`messageId`s distintos) com a mesma
   Idempotency-Key correm em paralelo e a perdedora cai no fallback de violação única, a transação dela faz
   rollback (inclusive a linha da inbox), e o resultado vira replay e ack. A inbox não registra esse
