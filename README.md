@@ -11,6 +11,50 @@ Inbox e processamento de referências fora de ordem. Roda em várias instâncias
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Teste de carga (1 instância × 3 instâncias): [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)
 
+## Visão geral da arquitetura
+
+```mermaid
+flowchart LR
+    P(["Provedores"])
+
+    subgraph IN["SQS de entrada"]
+        QIN[["wager-transactions.fifo"]]
+        DLQ[["wager-transactions-dlq.fifo"]]
+    end
+
+    subgraph APP["N instâncias sem estado (papéis em ROLES)"]
+        API["api"]
+        CON["consumer"]
+        PW["pending-worker"]
+        PUB["publisher"]
+    end
+
+    subgraph PG["PostgreSQL 16"]
+        W[("wallets")]
+        L[("wallet_ledger_entries")]
+        T[("wager_transactions")]
+        IB[("inbox_messages")]
+        OB[("outbox_messages")]
+    end
+
+    QEV[["wagering-events.fifo"]]
+
+    P -- "HTTP POST /wagering/transactions" --> API
+    P -- "SendMessage" --> QIN
+    QIN -- "long poll" --> CON
+    CON -- "erro permanente" --> DLQ
+    QIN -. "redrive" .-> DLQ
+    API -- "uma transação SQL, lock da wallet" --> PG
+    CON -- "a mesma transação, com inbox" --> PG
+    PW -- "PENDING_REFERENCE, SKIP LOCKED" --> T
+    OB -- "SKIP LOCKED, em lote" --> PUB
+    PUB -- "SendMessageBatch" --> QEV
+```
+
+Cada instância roda os papéis listados em `ROLES` e não guarda estado em memória: a coordenação é toda
+pelo banco. Saldo, ledger, transação, inbox e outbox são gravados na mesma transação SQL, e o evento só
+sai para `wagering-events.fifo` depois do commit, pela outbox.
+
 ## Versões fixadas
 
 | Componente | Versão | Onde está fixada |
