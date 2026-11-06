@@ -64,6 +64,25 @@ bun run start
 
 Pronto quando `curl http://localhost:3000/health/ready` responder `200`.
 
+### Tudo em containers (sem Bun no host)
+
+```bash
+docker compose --profile app up -d --build --wait
+```
+
+O profile `app` constrói a imagem (`Dockerfile`, `oven/bun:1.3.14`), roda uma vez o serviço `setup`
+(migrations + filas) e sobe **3 instâncias** com todos os papéis, em `:3001`, `:3002` e `:3003`, sobre o
+mesmo PostgreSQL e o mesmo LocalStack. Para conferir:
+
+```bash
+for port in 3001 3002 3003; do curl -s localhost:$port/health/ready; echo; done
+```
+
+Os exemplos abaixo funcionam com `API=http://localhost:3001` (ou qualquer uma das três), e `bun run sqs:send`
+no host publica na mesma fila. Sem o profile, `docker compose up -d` continua subindo só o PostgreSQL e o
+LocalStack, como pedem o fluxo manual e os testes. Para desligar as instâncias e manter a infraestrutura:
+`docker compose --profile app rm -sf setup app-1 app-2 app-3`.
+
 ### Papéis por processo (`ROLES`)
 
 `bun run start` sobe os quatro papéis. Para escalar cada um separadamente:

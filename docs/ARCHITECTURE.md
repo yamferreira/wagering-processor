@@ -95,6 +95,11 @@ processos nunca são usadas como garantia.
 - **NestJS + decorators no Bun validados.** A injeção de dependência por construtor funciona com
   `experimentalDecorators` + `emitDecoratorMetadata`: o transpiler do Bun emite `design:paramtypes`.
   O TS 7 faz o typecheck desses decorators sem erro, então nenhum fallback foi necessário.
+- **Imagem e profile `app`.** `Dockerfile` em dois estágios (`oven/bun:1.3.14`, só dependências de
+  produção, usuário sem privilégio, `HEALTHCHECK` em `/health/ready`, `bun` como PID 1 para receber o
+  SIGTERM). O profile `app` do compose roda um `setup` one-shot (migrations + filas) e 3 instâncias
+  (`:3001`–`:3003`) que só sobem depois dele. Sem o profile, o compose continua só com a infraestrutura, então
+  os testes e o CI não mudam.
 
 ## 3. Camadas (hexagonal)
 
