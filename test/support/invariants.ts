@@ -11,7 +11,7 @@ export interface LedgerDivergence {
 }
 
 /**
- * Final invariant of every test (CHALLENGE §13): for every wallet,
+ * Final invariant of every test (§13 of the challenge): for every wallet,
  * balance == Σ CREDIT − Σ DEBIT == balance_after of the latest entry, and the
  * wallet version matches the latest entry version. Comparison happens in SQL (NUMERIC),
  * never in JavaScript numbers.

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { pidAlive, spawnCluster } from "../support/cluster";
 import { waitForQuiescence } from "../support/drain";
 import { jsonLogs, killAllInstances } from "../support/instances";
@@ -22,6 +22,9 @@ describe("crash after commit and before ack (real processes)", () => {
 
   beforeAll(async () => {
     h = await createMessagingHarness({ label: "crash", queues: { visibilityTimeoutSeconds: 3 } });
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
   });
   afterAll(async () => {
     await killAllInstances();

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHttpHarness, type HttpHarness } from "../support/http";
 import { assertLedgerInvariant } from "../support/invariants";
 import { fireHttp, fireSqs } from "../support/load";
@@ -21,8 +21,10 @@ describe("the same BET 50× in parallel over HTTP", () => {
   beforeAll(async () => {
     h = await createHttpHarness();
   });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
+  });
   afterAll(async () => {
-    await assertLedgerInvariant(h.db.sql);
     await h.close();
   });
 
@@ -72,8 +74,10 @@ describe("the same BET 50× in parallel over SQS", () => {
     await h.start({ ROLES: ["consumer"] });
     await h.start({ ROLES: ["consumer"] }); // two consumers competing for the same messages' effects
   });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
+  });
   afterAll(async () => {
-    await assertLedgerInvariant(h.db.sql);
     await h.close();
   });
 

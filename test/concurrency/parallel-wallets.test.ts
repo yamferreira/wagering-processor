@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { TransientInfrastructureError } from "../../src/application/errors";
 import { assertLedgerInvariant } from "../support/invariants";
 import { CTX, createUseCaseHarness, type UseCaseHarness, wagerCommand } from "../support/use-cases";
@@ -12,6 +12,9 @@ describe("distinct wallets in parallel", () => {
 
   beforeAll(async () => {
     h = await createUseCaseHarness({ lockTimeoutMs: 1_000 }, 40);
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
   });
   afterAll(async () => {
     await h.close();

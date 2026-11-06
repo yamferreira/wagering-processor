@@ -1,6 +1,9 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { SubmitWagerCommand } from "../../src/application/use-cases/submit-wager-transaction";
+import { Money } from "../../src/domain/money/money";
+import { SeededRandom } from "../support/random";
 import { assertLedgerInvariant } from "../support/invariants";
+import { pendingReferenceCount } from "../support/out-of-order";
 import { CTX, createUseCaseHarness, type UseCaseHarness, wagerCommand } from "../support/use-cases";
 
 // Real PostgreSQL: explicit timeout per file (Bun ignores bunfig/preload beyond the first file).
@@ -18,24 +21,29 @@ describe("hot wallet", () => {
   beforeAll(async () => {
     h = await createUseCaseHarness({}, 30);
   });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
+  });
   afterAll(async () => {
     await h.close();
   });
 
-  const amount = (cents: number) => `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+  /** Random money in [min, min + span) minor units, drawn in bigint and formatted by Money (no number arithmetic). */
+  const randomMoney = (rng: SeededRandom, min: bigint, span: bigint): string =>
+    Money.ofMinorUnits(min + rng.below(span), "BRL").amount;
 
   test("200 concurrent mixed operations keep balance == ledger and balance >= 0", async () => {
     const wallet = await h.createWallet.execute(
       { playerId: `hot-${crypto.randomUUID()}`, initialBalance: { amount: "500.00", currency: "BRL" } },
       CTX,
     );
-    let seed = 42;
-    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+    const rng = new SeededRandom(42n);
+    const random = () => rng.chance(); // non-monetary choices only (shuffle order)
 
     const commands: SubmitWagerCommand[] = [];
     const bets: SubmitWagerCommand[] = [];
     for (let i = 0; i < 100; i++) {
-      const bet = wagerCommand(wallet, { roundId: `r-${i}`, money: { amount: amount(100 + Math.floor(random() * 1_900)), currency: "BRL" } });
+      const bet = wagerCommand(wallet, { roundId: `r-${i}`, money: { amount: randomMoney(rng, 100n, 1_900n), currency: "BRL" } });
       bets.push(bet);
       commands.push(bet);
     }
@@ -46,7 +54,7 @@ describe("hot wallet", () => {
         referenceExternalTransactionId: target.externalTransactionId,
         money: { amount: money, currency: "BRL" },
       });
-    for (let i = 0; i < 40; i++) commands.push(ref("WIN", bets[i]!, amount(50 + Math.floor(random() * 3_000))));
+    for (let i = 0; i < 40; i++) commands.push(ref("WIN", bets[i]!, randomMoney(rng, 50n, 3_000n)));
     for (let i = 40; i < 60; i++) commands.push(ref("LOSS", bets[i]!, "0.00"));
     for (let i = 60; i < 80; i++) commands.push(ref("REFUND", bets[i]!));
     for (let i = 80; i < 100; i++) commands.push(ref("ROLLBACK", bets[i]!));
@@ -87,6 +95,8 @@ describe("hot wallet", () => {
     expect(summary.failed).toBe(0);
     expect(summary.entries).toBe(summary.movements); // one ledger entry per balance-moving transaction
     expect(summary.max_reversals_per_reference).toBe(1);
+    // The out-of-order path really happened (settlements/reversals that arrived before their BET).
+    expect(await pendingReferenceCount(h.db.sql, [wallet.id])).toBeGreaterThan(0);
 
     // Balance recomputed from the transactions themselves (independently of the ledger).
     const [expected] = await h.db.sql`
@@ -101,8 +111,7 @@ describe("hot wallet", () => {
        WHERE t.wallet_id = ${wallet.id} AND t.status = 'PROCESSED'`;
     expect(summary.balance).toBe(expected.balance);
     await assertLedgerInvariant(h.db.sql, [wallet.id]);
-    console.log(
-      `[hot-wallet] ${commands.length} ops in ${elapsed.toFixed(0)} ms; final balance ${summary.balance}; ${summary.entries - 1} movements`,
-    );
+    const elapsedMs = Math.round(elapsed);
+    console.log(`[hot-wallet] ${commands.length} ops in ${elapsedMs} ms; ${summary.entries - 1} movements; final balance:`, summary.balance);
   });
 });

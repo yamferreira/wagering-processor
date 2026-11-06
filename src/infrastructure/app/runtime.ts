@@ -3,6 +3,7 @@ import type { AppConfig } from "../config/config";
 import { createHttpApp } from "../http/http-app";
 import { WagerTransactionConsumer } from "../messaging/consumers/wager-transaction.consumer";
 import { PollingWorker } from "../workers/polling-worker";
+import { errorFields } from "../observability/logger";
 import { buildContainer, type Container, type ContainerOverrides } from "./container";
 
 export type Role = AppConfig["ROLES"][number];
@@ -41,6 +42,10 @@ export async function startRuntime(config: AppConfig, overrides: ContainerOverri
           handler: container.handleWagerMessage,
           faults: container.faults,
           logger: log.child({ component: "consumer" }),
+          observer: {
+            onRetry: (failure) => container.metrics.retry("consumer", failure.code),
+            onDeadLetter: (failure) => container.metrics.deadLettered(failure.code),
+          },
         },
         {
           concurrency: config.CONSUMER_CONCURRENCY,
@@ -82,7 +87,7 @@ export async function startRuntime(config: AppConfig, overrides: ContainerOverri
     }
     if (roles.includes("api")) {
       runtime.http = await createHttpApp(container, {
-        onUnexpectedError: (error) => log.error({ err: describe(error) }, "unexpected error"),
+        onUnexpectedError: (error) => log.error({ ...errorFields(error) }, "unexpected error"),
       });
       await runtime.http.listen(config.PORT, "0.0.0.0");
       const address = runtime.http.getHttpServer().address() as { port: number } | null;
@@ -103,16 +108,13 @@ export async function startRuntime(config: AppConfig, overrides: ContainerOverri
 async function shutdown(runtime: Runtime): Promise<void> {
   const log = runtime.container.logger;
   // Stop accepting HTTP first, then drain message work, then release the pool.
-  await runtime.http?.close().catch((error) => log.error({ err: describe(error) }, "http close failed"));
+  await runtime.http?.close().catch((error) => log.error({ ...errorFields(error) }, "http close failed"));
   await Promise.all([
-    runtime.consumer?.stop().catch((error) => log.error({ err: describe(error) }, "consumer stop failed")),
-    runtime.publisher?.stop().catch((error) => log.error({ err: describe(error) }, "publisher stop failed")),
-    runtime.pendingWorker?.stop().catch((error) => log.error({ err: describe(error) }, "pending worker stop failed")),
+    runtime.consumer?.stop().catch((error) => log.error({ ...errorFields(error) }, "consumer stop failed")),
+    runtime.publisher?.stop().catch((error) => log.error({ ...errorFields(error) }, "publisher stop failed")),
+    runtime.pendingWorker?.stop().catch((error) => log.error({ ...errorFields(error) }, "pending worker stop failed")),
   ]);
   await runtime.container.close();
   log.info({}, "runtime stopped");
 }
 
-function describe(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}

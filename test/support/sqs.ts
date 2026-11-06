@@ -2,6 +2,7 @@ import { DeleteQueueCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { loadConfig } from "../../src/infrastructure/config/config";
 import { provisionQueues, type ProvisionedQueues, type QueueTopology } from "../../src/infrastructure/messaging/sqs/queue-provisioner";
 import { createSqsClient, SqsQueue } from "../../src/infrastructure/messaging/sqs/sqs.client";
+import { ensureTestInfrastructure } from "./preflight";
 
 const config = loadConfig();
 
@@ -32,6 +33,7 @@ export interface TestQueues {
 export async function createTestQueues(
   options: { redriveMaxReceives?: number; visibilityTimeoutSeconds?: number; label?: string } = {},
 ): Promise<TestQueues> {
+  await ensureTestInfrastructure();
   const client = testSqsClient();
   const prefix = `t${process.pid}-${options.label ?? "q"}-${crypto.randomUUID().slice(0, 8)}`;
   const topology: QueueTopology = {

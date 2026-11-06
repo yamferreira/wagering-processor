@@ -7,6 +7,7 @@ export type FaultPoint =
   | "submit:after-ledger-insert"
   | "submit:before-outbox-insert"
   | "submit:after-commit"
+  | "pending:before-apply"
   | "consumer:after-inbox-insert"
   | "consumer:after-commit-before-ack"
   | "outbox:after-claim-before-publish"

@@ -4,6 +4,7 @@ import { AuthGuard } from "../auth/auth.guard";
 import type { Container } from "../app/container";
 import { TOKENS } from "../app/tokens";
 import { HealthController } from "./controllers/health.controller";
+import { MetricsController } from "./controllers/metrics.controller";
 import { WageringController } from "./controllers/wagering.controller";
 import { WalletsController } from "./controllers/wallets.controller";
 
@@ -13,7 +14,7 @@ export class AppModule {
   static register(container: Container): DynamicModule {
     return {
       module: AppModule,
-      controllers: [WalletsController, WageringController, HealthController],
+      controllers: [WalletsController, WageringController, HealthController, MetricsController],
       providers: [
         { provide: TOKENS.Container, useValue: container },
         { provide: TOKENS.ProviderIdentity, useValue: container.identities },

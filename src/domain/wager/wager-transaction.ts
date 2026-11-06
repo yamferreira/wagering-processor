@@ -296,10 +296,14 @@ export class WagerTransaction {
    * First call (PENDING → PENDING_REFERENCE) schedules the first retry; later calls
    * (PENDING_REFERENCE → PENDING_REFERENCE) count one more attempt and reschedule.
    */
-  markPendingReference(nextAttemptAt: Date): void {
+  /**
+   * Waits for the reference. A reschedule counts as a retry attempt, except when the reference
+   * exists but is still pending (`spendAttempt: false`).
+   */
+  markPendingReference(nextAttemptAt: Date, options: { spendAttempt?: boolean } = {}): void {
     const wasPending = this._status === WagerTransactionStatus.PendingReference;
     this.transitionTo(WagerTransactionStatus.PendingReference);
-    if (wasPending) this._referenceAttempts += 1;
+    if (wasPending && options.spendAttempt !== false) this._referenceAttempts += 1;
     this._nextReferenceAttemptAt = new Date(nextAttemptAt.getTime());
   }
 

@@ -40,7 +40,7 @@ export const TERMINAL_STATUSES: ReadonlySet<WagerTransactionStatus> = new Set([
 export const INTERNAL_PROVIDER_ID = "internal";
 
 /**
- * Valid state transitions (CHALLENGE §6.3). PENDING_REFERENCE → PENDING_REFERENCE is a reschedule.
+ * Valid state transitions (§6.3 of the challenge). PENDING_REFERENCE → PENDING_REFERENCE is a reschedule.
  * Terminal states have no outgoing transitions.
  */
 export const VALID_TRANSITIONS: Readonly<Record<WagerTransactionStatus, readonly WagerTransactionStatus[]>> =

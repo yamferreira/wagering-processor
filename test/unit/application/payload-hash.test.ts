@@ -7,7 +7,7 @@ import {
   wagerPayloadHash,
 } from "../../../src/application/idempotency/payload-hash";
 
-/** The example request of CHALLENGE §9. */
+/** The example request of §9 of the challenge. */
 const challengeExample: WagerBusinessFields = {
   providerId: "provider-a",
   externalTransactionId: "transaction-123",

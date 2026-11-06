@@ -13,7 +13,7 @@ import { waitFor } from "../../support/wait";
 setDefaultTimeout(60_000);
 
 /**
- * T15 — Transactional Outbox publisher (§11) against real PostgreSQL and LocalStack.
+ * Transactional Outbox publisher (§11) against real PostgreSQL and LocalStack.
  * Events are produced by the real use cases (wallet openings and BETs) with no publisher
  * running, which is exactly the state left by a process that committed and died before
  * publishing.
@@ -227,5 +227,23 @@ describe("outbox publisher", () => {
     expect(audit.duplicates).toBe(audit.delivered - unique);
     const [projection] = await h.db.sql`SELECT COALESCE(SUM(events_applied), 0)::int AS applied FROM audit_projection`;
     expect(projection.applied).toBe(unique);
+  });
+
+  test("every published event carries the eventType message attribute (consumers can filter without parsing)", async () => {
+    await produceEvents(h, 3, 2); // 3 openings + 6 BETs = 18 events, more than one SQS batch of 10
+    while ((await pendingCount(h)) > 0) await h.container.publishOutbox.execute();
+
+    const received: { eventType: string; attribute: string | undefined }[] = [];
+    let idle = 0;
+    while (idle < 2) {
+      const batch = await h.queues.events.receive({ max: 10, waitSeconds: 1 });
+      if (batch.length === 0) idle++;
+      for (const message of batch) {
+        received.push({ eventType: JSON.parse(message.body).eventType, attribute: message.attributes.eventType });
+        await h.queues.events.delete(message.receiptHandle);
+      }
+    }
+    expect(received.length).toBeGreaterThanOrEqual(18);
+    for (const { eventType, attribute } of received) expect(attribute).toBe(eventType);
   });
 });

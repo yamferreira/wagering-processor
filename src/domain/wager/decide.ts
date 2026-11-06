@@ -24,7 +24,14 @@ export type Decision =
   | { type: "APPLY"; direction: LedgerDirection; reference: WagerTransaction | undefined }
   | { type: "RECORD_ONLY"; reference: WagerTransaction | undefined }
   | { type: "REJECT"; code: FailureCode; details?: { field: ReferenceMismatchField } }
-  | { type: "PENDING_REFERENCE" };
+  | { type: "PENDING_REFERENCE"; waitingFor: PendingReason };
+
+/**
+ * Why a transaction waits (§7.1, A7). REFERENCE_MISSING: the reference was never received; each
+ * retry spends the budget. REFERENCE_IN_FLIGHT: the reference exists but is itself still pending;
+ * the dependent spends nothing and is woken up when the reference becomes terminal (A28).
+ */
+export type PendingReason = "REFERENCE_MISSING" | "REFERENCE_IN_FLIGHT";
 
 const ALLOWED_REFERENCE_KINDS: Readonly<Partial<Record<Kind, readonly Kind[]>>> = Object.freeze({
   [Kind.Win]: [Kind.Bet],
@@ -37,7 +44,7 @@ const reject = (code: FailureCode, details?: { field: ReferenceMismatchField }):
   details ? { type: "REJECT", code, details } : { type: "REJECT", code };
 
 /**
- * Business rules of CHALLENGE §7 as a pure function. The caller must hold the wallet lock,
+ * Business rules of the challenge (§7) as a pure function. The caller must hold the wallet lock,
  * so `wallet` is the latest committed state and `lookup` cannot change underneath.
  */
 export function decide(tx: WagerTransaction, wallet: Wallet, lookup: ReferenceLookup | undefined): Decision {
@@ -52,7 +59,7 @@ export function decide(tx: WagerTransaction, wallet: Wallet, lookup: ReferenceLo
     if (!lookup) {
       throw new InvariantViolationError(`Transaction ${tx.id} has a reference but no lookup was provided`);
     }
-    if (!lookup.found) return { type: "PENDING_REFERENCE" };
+    if (!lookup.found) return { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" };
     reference = lookup.reference;
     const referenceDecision = checkReference(tx, reference, lookup.alreadyReversed);
     if (referenceDecision) return referenceDecision;
@@ -64,6 +71,7 @@ export function decide(tx: WagerTransaction, wallet: Wallet, lookup: ReferenceLo
   if (direction === LedgerDirection.Debit && !wallet.canDebit(tx.money)) {
     return reject(tx.isReversal() ? FailureCode.ReversalInsufficientFunds : FailureCode.InsufficientFunds);
   }
+  if (direction === LedgerDirection.Credit && !wallet.canCredit(tx.money)) return reject(FailureCode.BalanceLimitExceeded);
   return { type: "APPLY", direction, reference };
 }
 
@@ -76,7 +84,7 @@ function checkReference(tx: WagerTransaction, reference: WagerTransaction, alrea
 
   // A7: a reference still in flight is waited for; one that ended badly cannot be settled.
   if (reference.status === Status.Pending || reference.status === Status.PendingReference) {
-    return { type: "PENDING_REFERENCE" };
+    return { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_IN_FLIGHT" };
   }
   if (reference.status !== Status.Processed) return reject(FailureCode.ReferenceNotProcessed);
 

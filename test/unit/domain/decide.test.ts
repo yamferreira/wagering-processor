@@ -4,7 +4,7 @@ import { LedgerDirection } from "../../../src/domain/ledger/wallet-ledger-entry"
 import { Money } from "../../../src/domain/money/money";
 import { applyDecision } from "../../../src/domain/wager/apply-decision";
 import { type Decision, decide, type ReferenceLookup } from "../../../src/domain/wager/decide";
-import { FailureCode } from "../../../src/domain/wager/failure-code";
+import { FAILURE_CODE_CATALOG, FailureCode, ProviderAction } from "../../../src/domain/wager/failure-code";
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status } from "../../../src/domain/wager/kinds";
 import { ReferenceRetryPolicy } from "../../../src/domain/wager/reference-retry-policy";
 import { WagerTransaction } from "../../../src/domain/wager/wager-transaction";
@@ -100,7 +100,7 @@ describe("decide — WIN", () => {
   });
 
   test("missing reference → PENDING_REFERENCE", () => {
-    expect(decide(referencing(Kind.Win), wallet(), notFound)).toEqual({ type: "PENDING_REFERENCE" });
+    expect(decide(referencing(Kind.Win), wallet(), notFound)).toEqual({ type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" });
   });
 
   test("referencing a non-BET → REFERENCE_KIND_NOT_ALLOWED", () => {
@@ -130,7 +130,7 @@ describe("decide — LOSS", () => {
   });
 
   test("with a missing reference waits", () => {
-    expect(decide(referencing(Kind.Loss), wallet(), notFound)).toEqual({ type: "PENDING_REFERENCE" });
+    expect(decide(referencing(Kind.Loss), wallet(), notFound)).toEqual({ type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" });
   });
 });
 
@@ -163,12 +163,15 @@ describe("decide — REFUND", () => {
   });
 
   test("missing reference → PENDING_REFERENCE", () => {
-    expect(decide(referencing(Kind.Refund), wallet(), notFound)).toEqual({ type: "PENDING_REFERENCE" });
+    expect(decide(referencing(Kind.Refund), wallet(), notFound)).toEqual({ type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" });
   });
 
   test("reference still pending → waits (A7)", () => {
     const pending = buildTx({ kind: Kind.Bet, externalTransactionId: "bet-1" });
-    expect(decide(referencing(Kind.Refund), wallet(), found(pending))).toEqual({ type: "PENDING_REFERENCE" });
+    expect(decide(referencing(Kind.Refund), wallet(), found(pending))).toEqual({
+      type: "PENDING_REFERENCE",
+      waitingFor: "REFERENCE_IN_FLIGHT",
+    });
   });
 
   test("reference rejected → REFERENCE_NOT_PROCESSED (A7)", () => {
@@ -259,6 +262,30 @@ describe("decide — reference must belong to the same provider, player, wallet,
   });
 });
 
+describe("decide — balance limit of NUMERIC(20,2)", () => {
+  const MAX = "999999999999999999.99";
+
+  test("a WIN that would exceed the largest representable balance → BALANCE_LIMIT_EXCEEDED", () => {
+    expect(decide(buildTx({ kind: Kind.Win, money: brl("0.01") }), wallet(MAX), undefined)).toEqual(
+      rejectedWith(FailureCode.BalanceLimitExceeded),
+    );
+  });
+
+  test("a credit by reversal (ROLLBACK of a BET) is limited the same way", () => {
+    const decision = decide(referencing(Kind.Rollback), wallet("999999999999999990.00"), found(bet()));
+    expect(decision).toEqual(rejectedWith(FailureCode.BalanceLimitExceeded));
+  });
+
+  test("a credit that reaches exactly the limit is applied", () => {
+    const decision = decide(buildTx({ kind: Kind.Win, money: brl("0.01") }), wallet("999999999999999999.98"), undefined);
+    expect(decision).toEqual(expect.objectContaining({ type: "APPLY", direction: LedgerDirection.Credit }));
+  });
+
+  test("the code is a business rejection the operator must handle", () => {
+    expect(FAILURE_CODE_CATALOG[FailureCode.BalanceLimitExceeded].providerAction).toBe(ProviderAction.ContactOperator);
+  });
+});
+
 describe("applyDecision", () => {
   const policy = ReferenceRetryPolicy.of({ maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 3000 });
   const ctx = () => ({ ledgerEntryId: nextId("entry"), at: T0, retryPolicy: policy });
@@ -306,7 +333,7 @@ describe("applyDecision", () => {
   test("PENDING_REFERENCE schedules with backoff and rejects REFERENCE_NOT_FOUND when exhausted", () => {
     const w = wallet();
     const tx = referencing(Kind.Refund);
-    const decision: Decision = { type: "PENDING_REFERENCE" };
+    const decision: Decision = { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" };
     const first = applyDecision(tx, w, decision, ctx());
     expect(first).toEqual({ status: Status.PendingReference, nextAttemptAt: new Date(T0.getTime() + 1000) });
     const retry1 = applyDecision(tx, w, decision, ctx());
@@ -318,6 +345,28 @@ describe("applyDecision", () => {
     expect(tx.status).toBe(Status.Rejected);
     expect(tx.failureCode).toBe(FailureCode.ReferenceNotFound);
     expect(w.version).toBe(1);
+  });
+  test("a reference that exists but is still pending never spends attempts nor exhausts the budget", () => {
+    const w = wallet();
+    const tx = referencing(Kind.Rollback, "win-1");
+    const decision: Decision = { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_IN_FLIGHT" };
+    for (let round = 0; round < 10; round++) {
+      const outcome = applyDecision(tx, w, decision, ctx());
+      // Re-checked at the backoff cap as a safety net; the wake-up resolves it when the reference ends.
+      expect(outcome).toEqual({ status: Status.PendingReference, nextAttemptAt: new Date(T0.getTime() + policy.maxDelayMs) });
+    }
+    expect(tx.status).toBe(Status.PendingReference);
+    expect(tx.referenceAttempts).toBe(0);
+  });
+
+  test("attempts spent while the reference was missing are kept when it shows up still pending", () => {
+    const w = wallet();
+    const tx = referencing(Kind.Rollback, "win-1");
+    applyDecision(tx, w, { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" }, ctx());
+    applyDecision(tx, w, { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_MISSING" }, ctx());
+    expect(tx.referenceAttempts).toBe(1);
+    applyDecision(tx, w, { type: "PENDING_REFERENCE", waitingFor: "REFERENCE_IN_FLIGHT" }, ctx());
+    expect(tx.referenceAttempts).toBe(1);
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * Stable, machine-readable rejection/failure codes (CHALLENGE §7.2).
+ * Stable, machine-readable rejection/failure codes (§7.2 of the challenge).
  * Values are part of the public contract: never rename, only add.
  */
 export enum FailureCode {
@@ -23,6 +23,8 @@ export enum FailureCode {
   ReferenceAmountMismatch = "REFERENCE_AMOUNT_MISMATCH",
   /** Reference was already reversed (by REFUND or ROLLBACK). */
   ReferenceAlreadyReversed = "REFERENCE_ALREADY_REVERSED",
+  /** A credit would take the balance beyond the largest representable value (NUMERIC(20,2)). */
+  BalanceLimitExceeded = "BALANCE_LIMIT_EXCEEDED",
   /** Permanent internal error after the payload was accepted (status FAILED, A16). */
   InternalInvariantViolation = "INTERNAL_INVARIANT_VIOLATION",
 }
@@ -86,6 +88,10 @@ export const FAILURE_CODE_CATALOG: Readonly<Record<FailureCode, FailureCodeInfo>
   [FailureCode.ReferenceAlreadyReversed]: {
     providerAction: ProviderAction.GiveUp,
     description: "Referenced transaction was already reversed.",
+  },
+  [FailureCode.BalanceLimitExceeded]: {
+    providerAction: ProviderAction.ContactOperator,
+    description: "Credit would exceed the largest balance the wallet can hold (999999999999999999.99).",
   },
   [FailureCode.InternalInvariantViolation]: {
     providerAction: ProviderAction.ContactOperator,

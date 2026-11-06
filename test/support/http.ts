@@ -35,7 +35,7 @@ export async function createHttpHarness(
   const db = await createTestDatabase();
   const queues = await createTestQueues({ label: "http" });
   const config = loadConfig(process.env, {
-    DATABASE_URL: db.url,
+    DATABASE_URL: db.appUrl,
     SQS_INPUT_QUEUE: queues.topology.input,
     SQS_DLQ: queues.topology.dlq,
     SQS_EVENTS_QUEUE: queues.topology.events,
@@ -45,7 +45,7 @@ export async function createHttpHarness(
     PENDING_REF_CAP_MS: 200,
     ...options.config,
   });
-  const orm = await initOrm(db.url, 20);
+  const orm = await initOrm(db.appUrl, 20);
   const faults = new ScriptedFaults();
   const container = await buildContainer(config, {
     orm,

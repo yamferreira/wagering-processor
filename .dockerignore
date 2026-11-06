@@ -1,0 +1,7 @@
+# Allowlist: only what the image needs.
+*
+!package.json
+!bun.lock
+!tsconfig.json
+!src/
+!scripts/

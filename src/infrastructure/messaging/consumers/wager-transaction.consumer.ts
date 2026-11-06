@@ -1,6 +1,8 @@
 import type { FaultInjector } from "../../../application/ports/fault-injector";
 import type { Logger } from "../../../application/ports/logger";
 import type { HandleWagerMessage, MessageOutcome } from "../../../application/use-cases/handle-wager-message";
+import { enrichLogContext, withLogContext } from "../../observability/log-context";
+import { errorFields } from "../../observability/logger";
 import type { ReceivedMessage, SqsQueue } from "../sqs/sqs.client";
 import { parseWagerEnvelope } from "./envelope.schema";
 import { type ClassifiedFailure, classifyConsumerError } from "./error-classifier";
@@ -52,6 +54,10 @@ export class WagerTransactionConsumer {
   private running = false;
   private loop: Promise<void> | undefined;
   private currentPoll: Promise<ReceivedMessage[]> | undefined;
+  /** Ends the loop's current wait early (full capacity, receive backoff); set only while it waits. */
+  private wakeLoop: (() => void) | undefined;
+  /** Messages the loop received after stop() and handed straight back. */
+  private handedBack = 0;
   private readonly inFlight = new Map<string, { message: ReceivedMessage; done: Promise<void>; released: boolean }>();
   private readonly options: WagerConsumerOptions;
 
@@ -69,34 +75,43 @@ export class WagerTransactionConsumer {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.handedBack = 0;
     this.loop = this.run();
   }
 
   async stop(): Promise<{ completed: number; released: number }> {
     if (!this.running) return { completed: 0, released: 0 };
     this.running = false;
+    this.wakeLoop?.();
     // The open long poll is NOT aborted: aborting only cancels the client side, while the broker
     // keeps the ReceiveMessage open and would deliver a released message to this dead poll (making
     // it invisible for a full visibility timeout). It ends by itself within waitTimeSeconds, and
-    // whatever it returns is handed straight back (see run()). In-flight work gets the grace period
-    // concurrently, so stopping takes at most max(waitTimeSeconds, shutdownGraceMs).
+    // whatever it returns is handed straight back by run(). Waiting for the whole loop (not just the
+    // poll) guarantees that hand-back happened before stop() resolves and the process exits.
+    // In-flight work gets the grace period concurrently, so stopping takes at most
+    // max(waitTimeSeconds, shutdownGraceMs).
     const pending = [...this.inFlight.values()];
-    const grace = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), this.options.shutdownGraceMs));
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const grace = new Promise<"timeout">((resolve) => {
+      graceTimer = setTimeout(() => resolve("timeout"), this.options.shutdownGraceMs);
+    });
     await Promise.all([
-      this.currentPoll?.catch(() => undefined),
+      this.loop?.catch(() => undefined),
       Promise.race([Promise.allSettled(pending.map((entry) => entry.done)), grace]),
     ]);
+    clearTimeout(graceTimer);
 
-    let released = 0;
+    let released = this.handedBack;
     for (const entry of this.inFlight.values()) {
       entry.released = true;
       released++;
       await this.deps.input
         .changeVisibility(entry.message.receiptHandle, 0)
-        .catch((error) => this.deps.logger.warn({ err: describe(error) }, "could not release message"));
+        .catch((error) => this.deps.logger.warn({ ...errorFields(error) }, "could not release message"));
     }
-    this.deps.logger.info({ completed: pending.length - released, released }, "consumer stopped");
-    return { completed: pending.length - released, released };
+    const completed = pending.length - (released - this.handedBack);
+    this.deps.logger.info({ completed, released }, "consumer stopped");
+    return { completed, released };
   }
 
   private async run(): Promise<void> {
@@ -104,7 +119,7 @@ export class WagerTransactionConsumer {
     while (this.running) {
       const capacity = this.options.concurrency - this.inFlight.size;
       if (capacity <= 0) {
-        await Promise.race([...this.inFlight.values()].map((entry) => entry.done));
+        await this.waitUntil([...this.inFlight.values()].map((entry) => entry.done));
         continue;
       }
       let batch: ReceivedMessage[];
@@ -116,19 +131,20 @@ export class WagerTransactionConsumer {
         if (!this.running) break;
         pollFailures++;
         const delay = Math.min(250 * 2 ** pollFailures, 10_000);
-        this.deps.logger.warn({ err: describe(error), delayMs: delay }, "sqs receive failed; backing off");
-        await sleep(delay);
+        this.deps.logger.warn({ ...errorFields(error), delayMs: delay }, "sqs receive failed; backing off");
+        await this.waitUntil([], delay);
         continue;
       } finally {
         this.currentPoll = undefined;
       }
       if (!this.running) {
-        // Received during shutdown: hand them straight back.
+        // Received during shutdown: hand them straight back (stop() waits for this).
+        this.handedBack += batch.length;
         await Promise.all(
           batch.map((m) =>
             this.deps.input
               .changeVisibility(m.receiptHandle, 0)
-              .catch((error) => this.deps.logger.warn({ err: describe(error) }, "could not release message")),
+              .catch((error) => this.deps.logger.warn({ ...errorFields(error) }, "could not release message")),
           ),
         );
         break;
@@ -157,19 +173,28 @@ export class WagerTransactionConsumer {
     }
   }
 
-  private async handle(message: ReceivedMessage, entry: { released: boolean }): Promise<void> {
+  /** Each message runs in its own log context (correlationId, messageId, walletId, providerId, transactionId). */
+  private handle(message: ReceivedMessage, entry: { released: boolean }): Promise<void> {
+    return withLogContext({ sqsMessageId: message.messageId, receiveCount: message.receiveCount }, () =>
+      this.process(message, entry),
+    );
+  }
+
+  private async process(message: ReceivedMessage, entry: { released: boolean }): Promise<void> {
     const startedAt = performance.now();
-    const log = this.deps.logger.child({ sqsMessageId: message.messageId, receiveCount: message.receiveCount });
+    const log = this.deps.logger;
     let outcome: MessageOutcome;
     try {
       const parsed = parseWagerEnvelope(message.body);
-      const scoped = log.child({
+      enrichLogContext({
         messageId: parsed.messageId,
         correlationId: parsed.correlationId ?? parsed.messageId,
         walletId: parsed.command.walletId,
         providerId: parsed.command.providerId,
       });
+      const scoped = log;
       outcome = await this.deps.handler.execute(parsed);
+      if (outcome.type === "APPLIED") enrichLogContext({ transactionId: outcome.result.transaction.id });
       await this.deps.faults.checkpoint("consumer:after-commit-before-ack");
       if (entry.released) return; // shutdown already handed it back; the redelivery dedupes via inbox
       await this.deps.input.delete(message.receiptHandle);
@@ -180,8 +205,7 @@ export class WagerTransactionConsumer {
           outcome: outcome.type,
           ...(outcome.type === "APPLIED"
             ? {
-                transactionId: outcome.result.transaction.id,
-                status: outcome.result.transaction.status,
+                txStatus: outcome.result.transaction.status,
                 failureCode: outcome.result.transaction.failureCode,
                 idempotentReplay: outcome.result.replay,
               }
@@ -211,11 +235,12 @@ export class WagerTransactionConsumer {
       }
       await this.deadLetter(message, failure);
       this.deps.observer?.onDeadLetter?.(failure, message.receiveCount);
-      log.error({ failure: failure.code, reason: failure.message }, "message moved to the DLQ");
+      // failure.message is not logged: domain messages may quote amounts (it travels in the DLQ attributes).
+      log.error({ failure: failure.code }, "message moved to the DLQ");
     } catch (error) {
       // Could not even reschedule/move it: leave it; the visibility timeout (and, as a last
       // resort, the broker redrive policy) takes over.
-      log.error({ err: describe(error), failure: failure.code }, "failed to handle consumer failure");
+      log.error({ ...errorFields(error), failure: failure.code }, "failed to handle consumer failure");
     }
   }
 
@@ -234,12 +259,21 @@ export class WagerTransactionConsumer {
     });
     await this.deps.input.delete(message.receiptHandle);
   }
+
+  /** Resolves when any of `events` settles, after `timeoutMs` (if given) or when stop() is called. */
+  private waitUntil(events: Promise<unknown>[], timeoutMs?: number): Promise<void> {
+    if (!this.running) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
+        clearTimeout(timer);
+        if (this.wakeLoop === done) this.wakeLoop = undefined;
+        resolve();
+      };
+      this.wakeLoop = done;
+      if (timeoutMs !== undefined) timer = setTimeout(done, timeoutMs);
+      for (const event of events) event.then(done, done);
+    });
+  }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}

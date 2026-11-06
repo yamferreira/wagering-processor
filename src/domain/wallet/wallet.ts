@@ -117,6 +117,12 @@ export class Wallet {
   }
 
   /** True when a debit of `money` keeps the balance non-negative. */
+  /** False when the credit would exceed the largest representable balance. */
+  canCredit(money: Money): boolean {
+    this.assertSameCurrency(money);
+    return this._balance.canAdd(money);
+  }
+
   canDebit(money: Money): boolean {
     this.assertSameCurrency(money);
     return !this._balance.isLessThan(money);

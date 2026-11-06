@@ -44,7 +44,7 @@ export async function createMessagingHarness(
   const db = await createTestDatabase();
   const queues = await createTestQueues({ label: options.label ?? "msg", ...options.queues });
   const config = loadConfig(process.env, {
-    DATABASE_URL: db.url,
+    DATABASE_URL: db.appUrl,
     DB_POOL_MAX: 20,
     PORT: 0,
     SQS_INPUT_QUEUE: queues.topology.input,
@@ -64,7 +64,7 @@ export async function createMessagingHarness(
     FAULTS: "",
     ...options.config,
   });
-  const orm = await initOrm(db.url, 5);
+  const orm = await initOrm(db.appUrl, 5);
   const faults = new ScriptedFaults();
   const runtimes: Runtime[] = [];
   const container = await buildContainer(config, { orm, faults, logger: silentLogger });

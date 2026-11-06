@@ -3,6 +3,7 @@ import type { MikroORM } from "@mikro-orm/postgresql";
 import type { Repositories } from "../../application/ports/repositories";
 import type { Clock } from "../../application/ports/system";
 import type { TransactionOptions, TransactionRunner } from "../../application/ports/transaction-runner";
+import { TransientInfrastructureError } from "../../application/errors";
 import { isRetryableInPlace, translateDbError } from "./db-errors";
 import { createRepositories } from "./repositories/mikro-orm-repositories";
 
@@ -17,6 +18,8 @@ export interface TransactionRunnerOptions {
 
 export interface TransactionRunnerHooks {
   onRetry?(reason: string, attempt: number): void;
+  /** A transient failure that leaves the runner (no retry left, or not retryable in place). */
+  onTransientFailure?(reason: string): void;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,6 +64,7 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
           await sleep(5 * 2 ** attempt + Math.floor(Math.random() * 10));
           continue;
         }
+        if (translated instanceof TransientInfrastructureError) this.hooks.onTransientFailure?.(translated.reason);
         throw translated;
       }
     }

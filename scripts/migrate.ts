@@ -7,7 +7,8 @@ if (direction !== "up" && direction !== "down") {
   process.exit(2);
 }
 const config = loadConfig();
-const executed = await runMigrations(config.DATABASE_URL, direction, { toZero: process.argv.includes("--all") });
+// Migrations run as the schema owner; the service itself connects as the least-privilege role.
+const executed = await runMigrations(config.MIGRATION_DATABASE_URL, direction, { toZero: process.argv.includes("--all") });
 console.log(
   executed.length === 0
     ? `migration:${direction} — nothing to do`

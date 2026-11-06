@@ -77,6 +77,7 @@ describe("POST /wallets", () => {
   });
 
   test.each([
+    // audit-money: allow — proves a JSON number amount is rejected with 400
     ["amount as a JSON number", { playerId: "p", initialBalance: { amount: 25.5, currency: "BRL" } }, "VALIDATION_ERROR"],
     ["amount without decimals", { playerId: "p", initialBalance: money("10") }, "INVALID_MONEY"],
     ["negative amount", { playerId: "p", initialBalance: money("-1.00") }, "INVALID_MONEY"],
@@ -206,6 +207,7 @@ describe("POST /wagering/transactions — status matrix", () => {
     expect(first.body).toEqual({
       error: {
         code: "INSUFFICIENT_FUNDS",
+        failureCode: "INSUFFICIENT_FUNDS",
         message: expect.any(String),
         providerAction: "GIVE_UP",
         transactionId: expect.any(String),
@@ -217,6 +219,26 @@ describe("POST /wagering/transactions — status matrix", () => {
     const replay = await submit(body);
     expect(replay.status).toBe(422);
     expect(replay.body.error).toEqual({ ...first.body.error, idempotentReplay: true });
+  });
+
+  test("422 BALANCE_LIMIT_EXCEEDED for a credit beyond NUMERIC(20,2), not a 500/FAILED", async () => {
+    const wallet = await createWallet("999999999999999999.99");
+    const body = wager(wallet, { kind: "WIN", money: money("0.01") });
+    const first = await submit(body);
+    expect(first.status).toBe(422);
+    expect(first.body.error).toMatchObject({
+      code: "BALANCE_LIMIT_EXCEEDED",
+      failureCode: "BALANCE_LIMIT_EXCEEDED",
+      providerAction: "CONTACT_OPERATOR",
+      status: "REJECTED",
+      balance: money("999999999999999999.99"),
+      idempotentReplay: false,
+    });
+    const replay = await submit(body);
+    expect(replay.status).toBe(422);
+    expect(replay.body.error).toEqual({ ...first.body.error, idempotentReplay: true });
+    const current = await h.request("GET", `/wallets/${wallet.id}`);
+    expect(current.body).toMatchObject({ balance: money("999999999999999999.99"), version: 1 }); // untouched
   });
 
   test("409 for the same key with a different payload, and for a reused external id", async () => {
@@ -245,6 +267,7 @@ describe("POST /wagering/transactions — status matrix", () => {
   });
 
   test.each([
+    // audit-money: allow — proves a JSON number amount is rejected with 400
     ["amount as a JSON number", { money: { amount: 25, currency: "BRL" } }],
     ["scientific notation", { money: money("1e2") }],
     ["three decimals", { money: money("1.005") }],
@@ -270,11 +293,20 @@ describe("POST /wagering/transactions — status matrix", () => {
     h.faults.throwAt("submit:after-ledger-insert", () => new TypeError("simulated bug"));
     const first = await submit(body);
     expect(first.status).toBe(500);
-    expectErrorShape(first.body, "INTERNAL_ERROR");
-    expect(first.body.error.transactionId).toEqual(expect.any(String));
+    expect(first.body).toEqual({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: expect.any(String),
+        transactionId: expect.any(String),
+        status: "FAILED",
+        failureCode: "INTERNAL_INVARIANT_VIOLATION",
+        idempotentReplay: false,
+      },
+    });
     const replay = await submit(body);
     expect(replay.status).toBe(500);
-    expect(replay.body.error).toMatchObject({ status: "FAILED", failureCode: "INTERNAL_INVARIANT_VIOLATION", idempotentReplay: true });
+    // Same body as the first response; only idempotentReplay tells them apart (A11).
+    expect(replay.body.error).toEqual({ ...first.body.error, idempotentReplay: true });
     expect(await walletRow(h.db.sql, wallet.id)).toEqual({ balance: "100.00", version: 1 });
   });
 });

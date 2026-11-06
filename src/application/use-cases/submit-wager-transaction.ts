@@ -10,6 +10,7 @@ import { type CreateWagerTransactionProps, WagerTransaction } from "../../domain
 import { ApplicationError, NotFoundError, TransientInfrastructureError, UniqueViolationError } from "../errors";
 import { wagerPayloadHash } from "../idempotency/payload-hash";
 import { type FaultInjector, InjectedFaultError } from "../ports/fault-injector";
+import { type Metrics, noMetrics, secondsSince } from "../ports/metrics";
 import type { Repositories } from "../ports/repositories";
 import type { Clock, IdGenerator } from "../ports/system";
 import type { TransactionRunner } from "../ports/transaction-runner";
@@ -54,6 +55,7 @@ export interface SubmitWagerDeps {
   faults: FaultInjector;
   retryPolicy: ReferenceRetryPolicy;
   supportedCurrencies: readonly string[];
+  metrics?: Metrics;
 }
 
 /** Permanent error after the request was accepted (A16). The transaction was recorded as FAILED when possible. */
@@ -86,6 +88,22 @@ export class SubmitWagerTransaction {
   constructor(private readonly deps: SubmitWagerDeps) {}
 
   async execute(command: SubmitWagerCommand, ctx: RequestContext, hooks: SubmitHooks = {}): Promise<SubmitResult> {
+    const metrics = this.deps.metrics ?? noMetrics;
+    const startedAt = performance.now();
+    try {
+      const result = await this.process(command, ctx, hooks);
+      if (result.replay) metrics.idempotentReplay(ctx.channel);
+      else metrics.transactionRecorded(result.transaction.kind, result.transaction.status, ctx.channel);
+      metrics.processingDuration(ctx.channel, secondsSince(startedAt));
+      return result;
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) metrics.idempotencyConflict(error.code);
+      if (error instanceof InternalProcessingError) metrics.transactionRecorded(command.kind, "FAILED", ctx.channel);
+      throw error;
+    }
+  }
+
+  private async process(command: SubmitWagerCommand, ctx: RequestContext, hooks: SubmitHooks): Promise<SubmitResult> {
     const { runner, ids, clock, faults } = this.deps;
     const props = this.buildProps(command);
     const identity = { idempotencyKey: props.idempotencyKey, payloadHash: props.payloadHash };
@@ -100,7 +118,9 @@ export class SubmitWagerTransaction {
     try {
       result = await runner.run(async (repos) => {
         await hooks.withinTransaction?.(repos);
+        const lockRequestedAt = performance.now();
         const wallet = await repos.wallets.lockById(props.walletId);
+        (this.deps.metrics ?? noMetrics).lockWait(secondsSince(lockRequestedAt));
         if (!wallet) throw new NotFoundError("WALLET", props.walletId);
 
         // Evaluated inside the transaction: a conflict rolls back whatever the hook wrote (inbox).
@@ -174,15 +194,20 @@ export class SubmitWagerTransaction {
     return props;
   }
 
-  /** Best effort (A16): record the accepted transaction as FAILED for auditability. */
+  /**
+   * Best effort (A16): record the accepted transaction as FAILED for auditability, and wake up the
+   * transactions waiting for it (they become REJECTED with REFERENCE_NOT_PROCESSED).
+   */
   private async recordFailure(props: CreateWagerTransactionProps): Promise<string | undefined> {
     try {
       return await this.deps.runner.run(async (repos) => {
         if (!(await repos.wallets.findById(props.walletId))) return undefined;
         if (await findExisting(repos, props)) return undefined;
         const tx = WagerTransaction.create(props);
-        tx.fail(FailureCode.InternalInvariantViolation, this.deps.clock.now());
+        const now = this.deps.clock.now();
+        tx.fail(FailureCode.InternalInvariantViolation, now);
         await repos.transactions.insert(tx);
+        await wakeDependentsOf(repos, tx, now); // A28: FAILED is terminal too
         return tx.id;
       });
     } catch {

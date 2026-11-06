@@ -3,6 +3,7 @@ import type { Container } from "../../app/container";
 import { TOKENS } from "../../app/tokens";
 import { createWalletSchema, ledgerQuerySchema, uuidSchema } from "../dto/schemas";
 import { presentLedgerEntry, presentReconciliation, presentWallet } from "../presenters";
+import { enrichLogContext } from "../../observability/log-context";
 import { type ContextualRequest, httpContext } from "../request-context";
 
 @Controller("wallets")
@@ -14,16 +15,19 @@ export class WalletsController {
   async create(@Body() body: unknown, @Req() req: ContextualRequest) {
     const command = createWalletSchema.parse(body);
     const wallet = await this.container.createWallet.execute(command, httpContext(req));
+    enrichLogContext({ walletId: wallet.id });
     return presentWallet(wallet);
   }
 
   @Get(":walletId")
   async get(@Param("walletId") walletId: string) {
+    enrichLogContext({ walletId });
     return presentWallet(await this.container.getWallet.execute(uuidSchema.parse(walletId)));
   }
 
   @Get(":walletId/ledger")
   async ledger(@Param("walletId") walletId: string, @Query() query: unknown) {
+    enrichLogContext({ walletId });
     const { cursor, limit } = ledgerQuerySchema.parse(query);
     const result = await this.container.getLedger.execute({ walletId: uuidSchema.parse(walletId), cursor, limit });
     return {
@@ -36,6 +40,7 @@ export class WalletsController {
   @Post(":walletId/reconciliation")
   @HttpCode(200)
   async reconcile(@Param("walletId") walletId: string) {
+    enrichLogContext({ walletId });
     return presentReconciliation(await this.container.reconcile.execute(uuidSchema.parse(walletId)));
   }
 }

@@ -1,8 +1,27 @@
 name: wagering-processor
 
+# Default (no profile): only PostgreSQL and LocalStack, for the manual flow and the tests.
+# `docker compose --profile app up`: also builds the service, runs migrations + queue setup once
+# and starts 3 instances with every role on ports 3001, 3002 and 3003.
+
+x-app: &app
+  build: .
+  image: wagering-processor:local
+  profiles: ["app"]
+  environment: &app-env
+    DATABASE_URL: postgres://wagering_app:wagering_app@postgres:5432/wagering
+    MIGRATION_DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+    SQS_ENDPOINT: http://localstack:4566
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    LOG_LEVEL: info
+  # Long poll (20 s) + in-flight grace (10 s) before the hard deadline of main.ts.
+  stop_grace_period: 35s
+
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     environment:
       POSTGRES_USER: wagering
       POSTGRES_PASSWORD: wagering
@@ -30,6 +49,37 @@ services:
       interval: 3s
       timeout: 3s
       retries: 40
+
+  setup:
+    <<: *app
+    command: ["sh", "-c", "bun run scripts/migrate.ts up && bun run scripts/setup-queues.ts"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  app-1: &instance
+    <<: *app
+    ports:
+      - "${APP_1_PORT:-3001}:3000"
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  app-2:
+    <<: *instance
+    ports:
+      - "${APP_2_PORT:-3002}:3000"
+
+  app-3:
+    <<: *instance
+    ports:
+      - "${APP_3_PORT:-3003}:3000"
 
 volumes:
   pgdata:

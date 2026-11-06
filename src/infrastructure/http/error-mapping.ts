@@ -9,7 +9,9 @@ import { ProviderForbiddenError, UnauthenticatedError } from "../../application/
 import { InternalProcessingError } from "../../application/use-cases/submit-wager-transaction";
 import { ValidationError } from "../../domain/errors";
 import { InvalidCurrencyError, InvalidMoneyError, MoneyOverflowError } from "../../domain/money/money.errors";
+import { FailureCode } from "../../domain/wager/failure-code";
 import { IdempotencyConflictError } from "../../domain/wager/idempotency";
+import { failedTransactionBody } from "./presenters";
 
 export interface ErrorBody {
   error: { code: string; message: string; [detail: string]: unknown };
@@ -64,7 +66,11 @@ export function mapError(err: unknown): MappedError {
     };
   }
   if (err instanceof InternalProcessingError) {
-    return error(500, err.code, err.message, { transactionId: err.transactionId ?? null });
+    // Recorded as FAILED: same body the replay will return. Otherwise nothing was persisted.
+    if (err.transactionId) {
+      return { status: 500, body: failedTransactionBody(err.transactionId, FailureCode.InternalInvariantViolation, false) };
+    }
+    return error(500, err.code, err.message, { transactionId: null });
   }
   if (err instanceof HttpException) {
     const status = err.getStatus();

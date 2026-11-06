@@ -6,8 +6,9 @@ import { SQS_ENDPOINT, createTestQueues, type TestQueues } from "../../support/s
 setDefaultTimeout(60_000);
 
 /**
- * T13: validates the LocalStack (4.14.0) features the consumer and the publisher rely on:
+ * Validates the LocalStack (4.14.0) features the consumer and the publisher rely on:
  * FIFO + explicit deduplication, ChangeMessageVisibility and redrive to the DLQ.
+ * Broker-only: no database is touched, so the ledger invariant does not apply to this file.
  */
 describe("SQS adapter and queue provisioning (LocalStack)", () => {
   let queues: TestQueues;

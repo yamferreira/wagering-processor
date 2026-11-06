@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { SQL } from "bun";
 import { createTestDatabase, expectSqlError, type TestDatabase } from "../../support/db";
 import { assertLedgerInvariant, findLedgerDivergences } from "../../support/invariants";
 import { insertLedger, insertTx, type SeededWallet, seedBet, seedWallet, uuid } from "../../support/sql-fixtures";
@@ -265,6 +266,96 @@ describe("wallet_ledger_entries (append-only, balanced, chained)", () => {
   });
 });
 
+describe("a ledger entry must describe its transaction (ledger_check_transaction)", () => {
+  const entryFor = (wallet: SeededWallet, transactionId: string, direction: "DEBIT" | "CREDIT", amount: string) =>
+    insertLedger(db.sql, {
+      wallet_id: wallet.walletId,
+      transaction_id: transactionId,
+      direction,
+      amount,
+      balance_before: "100.00",
+      balance_after: direction === "DEBIT" ? "75.00" : "125.00",
+      wallet_version: 2,
+    });
+
+  test("no entry for a transaction that is not PROCESSED (REJECTED, FAILED, PENDING_REFERENCE)", async () => {
+    const wallet = await seedWallet(db.sql, { balance: "100.00" });
+    for (const status of ["REJECTED", "FAILED", "PENDING_REFERENCE"]) {
+      const txId = await insertTx(db.sql, {
+        wallet_id: wallet.walletId,
+        player_id: wallet.playerId,
+        kind: "BET",
+        amount: "25.00",
+        status,
+        failure_code: status === "PENDING_REFERENCE" ? null : status === "FAILED" ? "INTERNAL_INVARIANT_VIOLATION" : "INSUFFICIENT_FUNDS",
+        next_reference_attempt_at: status === "PENDING_REFERENCE" ? new Date() : null,
+      });
+      const { state } = await expectSqlError(() => entryFor(wallet, txId, "DEBIT", "25.00"));
+      expect(state).toBe("23000");
+    }
+  });
+
+  test("no entry for a LOSS (it records a result without moving the balance)", async () => {
+    const wallet = await seedWallet(db.sql, { balance: "100.00" });
+    const lossId = await insertTx(db.sql, { wallet_id: wallet.walletId, player_id: wallet.playerId, kind: "LOSS", amount: "25.00" });
+    const { state } = await expectSqlError(() => entryFor(wallet, lossId, "DEBIT", "25.00"));
+    expect(state).toBe("23000");
+  });
+
+  test("the entry amount must be the transaction amount", async () => {
+    const wallet = await seedWallet(db.sql, { balance: "100.00" });
+    const betId = await insertTx(db.sql, { wallet_id: wallet.walletId, player_id: wallet.playerId, kind: "BET", amount: "20.00" });
+    const { state } = await expectSqlError(() => entryFor(wallet, betId, "DEBIT", "25.00"));
+    expect(state).toBe("23000");
+  });
+
+  test("the direction must match the kind (a BET never credits, a WIN never debits)", async () => {
+    const wallet = await seedWallet(db.sql, { balance: "100.00" });
+    const betId = await insertTx(db.sql, { wallet_id: wallet.walletId, player_id: wallet.playerId, kind: "BET", amount: "25.00" });
+    expect((await expectSqlError(() => entryFor(wallet, betId, "CREDIT", "25.00"))).state).toBe("23000");
+    const winId = await insertTx(db.sql, { wallet_id: wallet.walletId, player_id: wallet.playerId, kind: "WIN", amount: "25.00" });
+    expect((await expectSqlError(() => entryFor(wallet, winId, "DEBIT", "25.00"))).state).toBe("23000");
+  });
+
+  test("a ROLLBACK moves the opposite way of what it reverses (BET → CREDIT accepted, DEBIT rejected)", async () => {
+    const wallet = await seedWallet(db.sql, { balance: "100.00" });
+    const betExternal = `bet-${uuid()}`;
+    const betId = await seedBet(db.sql, wallet, { amount: "25.00", before: "100.00", after: "75.00", version: 2, externalId: betExternal });
+    const rollbackId = await insertTx(db.sql, {
+      wallet_id: wallet.walletId,
+      player_id: wallet.playerId,
+      kind: "ROLLBACK",
+      amount: "25.00",
+      reference_external_transaction_id: betExternal,
+      reference_transaction_id: betId,
+    });
+    const wrong = await expectSqlError(() =>
+      insertLedger(db.sql, {
+        wallet_id: wallet.walletId,
+        transaction_id: rollbackId,
+        direction: "DEBIT",
+        amount: "25.00",
+        balance_before: "75.00",
+        balance_after: "50.00",
+        wallet_version: 3,
+      }),
+    );
+    expect(wrong.state).toBe("23000");
+    await db.sql.begin(async (tx) => {
+      await insertLedger(tx, {
+        wallet_id: wallet.walletId,
+        transaction_id: rollbackId,
+        direction: "CREDIT",
+        amount: "25.00",
+        balance_before: "75.00",
+        balance_after: "100.00",
+        wallet_version: 3,
+      });
+      await tx`UPDATE wallets SET balance = 100.00, version = 3 WHERE id = ${wallet.walletId}`;
+    });
+  });
+});
+
 describe("wager_transactions", () => {
   let wallet: SeededWallet;
 
@@ -367,6 +458,43 @@ describe("wager_transactions", () => {
     const id = await tx();
     expect((await expectSqlError(() => db.sql`DELETE FROM wager_transactions WHERE id = ${id}`)).state).toBe("23001");
     expect((await expectSqlError(() => db.sql`TRUNCATE wager_transactions CASCADE`)).state).toBe("23001");
+  });
+});
+
+describe("runtime role (wagering_app) cannot bypass the schema guarantees", () => {
+  let app: SQL;
+
+  beforeAll(() => {
+    app = new SQL({ url: db.appUrl, max: 2 });
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+
+  test("it is not a superuser and owns no table", async () => {
+    const [role] = await app`SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+    expect(role).toEqual({ rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolbypassrls: false });
+    const owned = await app`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tableowner = current_user`;
+    expect(owned).toEqual([]);
+  });
+
+  test("it can read and append to the ledger, nothing else", async () => {
+    const wallet = await seedWallet(db.sql, { balance: "100.00" });
+    const [entry] = await app`SELECT id FROM wallet_ledger_entries WHERE wallet_id = ${wallet.walletId}`;
+    expect(entry).toBeDefined();
+    // 42501 insufficient_privilege: rejected before any trigger even runs.
+    expect((await expectSqlError(() => app`UPDATE wallet_ledger_entries SET amount = 1 WHERE id = ${entry.id}`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`DELETE FROM wallet_ledger_entries WHERE id = ${entry.id}`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`TRUNCATE wallet_ledger_entries`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`DELETE FROM wager_transactions`)).state).toBe("42501");
+  });
+
+  test("it cannot disable triggers, switch to replica mode, or change the schema", async () => {
+    expect((await expectSqlError(() => app`ALTER TABLE wallet_ledger_entries DISABLE TRIGGER USER`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`ALTER TABLE wallets DISABLE TRIGGER wallet_check_ledger`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`SET session_replication_role = replica`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`DROP TABLE wallet_ledger_entries`)).state).toBe("42501");
+    expect((await expectSqlError(() => app`ALTER TABLE wallets DROP CONSTRAINT wallets_balance_non_negative`)).state).toBe("42501");
   });
 });
 

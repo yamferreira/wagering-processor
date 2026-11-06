@@ -4,6 +4,7 @@ import { WagerTransaction } from "../../domain/wager/wager-transaction";
 import { Wallet } from "../../domain/wallet/wallet";
 import { UniqueViolationError, WalletAlreadyExistsError } from "../errors";
 import { openingPayloadHash } from "../idempotency/payload-hash";
+import { type Metrics, noMetrics } from "../ports/metrics";
 import type { Clock, IdGenerator } from "../ports/system";
 import type { TransactionRunner } from "../ports/transaction-runner";
 import { eventContextFactory, type RequestContext } from "./context";
@@ -19,6 +20,7 @@ export interface CreateWalletDeps {
   ids: IdGenerator;
   clock: Clock;
   supportedCurrencies: readonly string[];
+  metrics?: Metrics;
 }
 
 /**
@@ -38,7 +40,7 @@ export class CreateWallet {
     const nextEventContext = eventContextFactory(ctx, ids, clock);
 
     try {
-      return await this.deps.runner.run(async (repos) => {
+      const wallet = await this.deps.runner.run(async (repos) => {
         const at = clock.now();
         const { wallet, openingEntry } = Wallet.open({
           id: walletId,
@@ -63,6 +65,8 @@ export class CreateWallet {
         }
         return wallet;
       });
+      if (initialBalance.isPositive()) (this.deps.metrics ?? noMetrics).transactionRecorded("OPENING", "PROCESSED", ctx.channel);
+      return wallet;
     } catch (error) {
       if (error instanceof UniqueViolationError && error.constraint === "wallets_player_currency_uq") {
         throw new WalletAlreadyExistsError(command.playerId, initialBalance.currency);

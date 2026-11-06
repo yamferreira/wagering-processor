@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { SubmitWagerCommand } from "../../src/application/use-cases/submit-wager-transaction";
 import { pidAlive, spawnCluster } from "../support/cluster";
 import { waitForQuiescence } from "../support/drain";
 import { killAllInstances } from "../support/instances";
 import { assertLedgerInvariant } from "../support/invariants";
+import { pendingReferenceCount } from "../support/out-of-order";
 import { fireSqs, type HttpResult, postWager } from "../support/load";
 import { createMessagingHarness, type MessagingHarness } from "../support/messaging";
 import { drainQueue } from "../support/sqs";
@@ -27,6 +28,9 @@ describe("restart with proof of final consistency (real processes)", () => {
 
   beforeAll(async () => {
     h = await createMessagingHarness({ label: "restart", queues: { visibilityTimeoutSeconds: 3 } });
+  });
+  afterEach(async () => {
+    await assertLedgerInvariant(h.db.sql); // §13: the invariant closes every test
   });
   afterAll(async () => {
     await killAllInstances();
@@ -127,6 +131,7 @@ describe("restart with proof of final consistency (real processes)", () => {
       expect(report.consistent).toBe(true);
     }
     await assertLedgerInvariant(h.db.sql);
+    expect(await pendingReferenceCount(h.db.sql, wallets.map((w) => w.id))).toBeGreaterThan(0); // out of order for real
 
     const [leftovers] = await h.db.sql`
       SELECT (SELECT COUNT(*)::int FROM outbox_messages WHERE published_at IS NULL) AS unpublished,
